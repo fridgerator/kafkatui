@@ -9,14 +9,15 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 2 of 10 — local Kafka stack.** The local dev stack runs and is producing real data; the TUI
-still doesn't talk to Kafka yet (that's phase 3).
+**Phase 3 of 10 — Consume tab core.** Pick a topic, tail it live against a real ring buffer with a
+manually-windowed list — JSON and plain text decode; Avro correctly falls back to a hex preview until
+phase 4.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
 | 1 | Tab shell, theme tokens, status/hint bars | ✅ done |
 | 2 | Local Kafka stack (docker-compose + synthetic producer) | ✅ done |
-| 3 | Consume tab: ephemeral consumer, ring buffer, windowed list | not started |
+| 3 | Consume tab: ephemeral consumer, ring buffer, windowed list | ✅ done |
 | 4 | Avro + Confluent Schema Registry | not started |
 | 5 | Search bar + `@filter:` query language | not started |
 | 6 | Message detail view | not started |
@@ -32,10 +33,16 @@ still doesn't talk to Kafka yet (that's phase 3).
 
 ## Getting started
 
+Bring up the [local Kafka stack](#local-kafka-stack) first, then:
+
 ```sh
 bun install
-bun run dev
+bun run dev -- --config config.example.yaml
 ```
+
+`--config <path>` (default `~/.kafka-tui/config.yaml`) and `--profile <name>` (default: the config's
+`defaultProfile`) select which cluster to connect to (spec §3). A bad config, unknown profile, or
+missing `${ENV_VAR}` fails fast with a plain error on stderr before the TUI starts.
 
 ### Keybindings
 
@@ -46,7 +53,23 @@ bun run dev
 | `q` / `Ctrl+C` | Quit |
 
 Per-tab keys are listed in the hint bar at the bottom of the screen. Keys shown
-there for unbuilt features are advertised but not yet wired up.
+there for unbuilt features are advertised but not yet wired up. While a text
+input is focused (e.g. Consume's topic field), the global shortcuts above
+stand down so you can type freely — see [Conventions](#conventions).
+
+**Consume tab:**
+
+| Key | Action |
+|---|---|
+| `t` | Edit the topic name (starts blank; `Enter` connects, `Escape` cancels) |
+| `e` | Toggle latest/earliest start position (applies on next connect) |
+| `↑` / `↓` | Move selection; `↑` pauses the live tail, `↓` to the bottom resumes it |
+| `Space` | Explicitly pause/resume following new messages |
+| `c` | Clear the buffer without disconnecting |
+
+Switching to another tab disconnects the ephemeral consumer; returning to Consume starts fresh
+(re-enter the topic). This is a deliberate v1 simplification, not a bug — see the plan notes if you
+want tails to persist across tabs.
 
 ### Scripts
 
@@ -54,6 +77,7 @@ there for unbuilt features are advertised but not yet wired up.
 |---|---|
 | `bun run dev` | Run the TUI |
 | `bun run typecheck` | `tsc --noEmit` |
+| `bun run test` | Unit tests (`bun test`) — ring buffer, decode dispatch, config loader |
 
 ## Local Kafka stack
 
@@ -74,10 +98,10 @@ docker compose -f docker/docker-compose.yml up -d
 ```
 
 This exposes the broker at `localhost:9092` and the registry at `localhost:8081` — matching the
-`dev-local` profile in [`config.example.yaml`](config.example.yaml) exactly, so once phase 3's config
-loader exists, `docker compose up` + `bun run dev --profile dev-local` is a working end-to-end loop
-with zero AWS dependency. Until then, point any Kafka client (`kcat -b localhost:9092 -t orders.json
--C`, etc.) directly at those addresses to poke around.
+`dev-local` profile in [`config.example.yaml`](config.example.yaml) exactly, so
+`docker compose up -d` + `bun run dev -- --config config.example.yaml` is a working end-to-end loop
+with zero AWS dependency. Any other Kafka client (`kcat -b localhost:9092 -t orders.json -C`, etc.)
+can also point at those addresses directly.
 
 Produce rate is tunable — copy [`.env.example`](.env.example) to `.env` next to
 `docker/docker-compose.yml` to change it. By default it produces ~5 msgs/sec/topic, with a 5-second
@@ -100,16 +124,32 @@ throwing — the connection layer just logs the raw broker response first).
 
 ```
 src/
-├── index.tsx              entrypoint: createCliRenderer + createRoot
-├── app.tsx                root component, tab routing, global keybindings
+├── index.tsx              entrypoint: loads config, builds the Kafka client, then boots the renderer
+├── app.tsx                root component, tab routing, global keybindings (gated on inputActive)
 ├── theme/monokai.ts       all color tokens (the only file with hex literals)
+├── config/
+│   ├── types.ts           ClusterProfile / AuthConfig / KafkaTuiConfig (spec §3)
+│   └── loadConfig.ts      --config/--profile flags, YAML parse, ${ENV_VAR} interpolation
+├── kafka/
+│   ├── types.ts           RawMessage, BufferedMessage, ConnectionState
+│   ├── client.ts          createKafkaClient(profile) — "none" auth implemented, others stubbed
+│   ├── KafkaClientContext.tsx  shared Kafka client instance for all tabs
+│   ├── consume.ts         ephemeral no-commit consumer wrapper
+│   └── decode/
+│       ├── decodeMessage.ts   magic-byte stub → JSON → text → hex, never throws
+│       └── hexDump.ts
+├── buffer/
+│   └── ringBuffer.ts      seq-anchored circular buffer (unit tested)
 └── components/
     ├── StatusBar.tsx      profile, connection state, topic
     ├── TabBar.tsx         tab strip + TabId definitions
     ├── HintBar.tsx        context-sensitive keybinding hints
-    ├── consume/           Consume tab (spec §6)
-    ├── groups/            Consumer Groups tab
-    ├── topics/            Topics / cluster metadata tab
+    ├── consume/
+    │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state
+    │   ├── TopicBar.tsx       topic-name input + latest/earliest toggle
+    │   └── MessageList.tsx    pure presentational, renders exactly rowCount rows
+    ├── groups/            Consumer Groups tab (placeholder — phase 7)
+    ├── topics/            Topics / cluster metadata tab (placeholder — phase 8)
     └── produce/           Produce placeholder (read-only in v1)
 
 docker/
@@ -129,3 +169,14 @@ so upgrades should be deliberate rather than picked up by a range.
 - **Flex children that must keep their size** need `flexShrink: 0`, and scrolling
   or clipping containers need `overflow: "hidden"`. Without both, OpenTUI shrinks
   children toward zero and they paint over each other on small terminals.
+- **`useKeyboard` is one global subscription**, not scoped to whatever has
+  `focused`. Any component with a text input must report that up via a lifted
+  `inputActive`-style boolean so `app.tsx`'s global digit/Tab/`q` handler can
+  stand down — otherwise typing into a field also switches tabs or quits.
+- **A ring-buffer/list row must always render as exactly one terminal row.**
+  Every message row needs `wrapMode: "none"` and `truncate` — the whole
+  manual-windowing scheme (`rowCount` rows ↔ `rowCount` ring-buffer entries)
+  silently breaks the moment one row wraps to two lines.
+- **Measure available rows via `onSizeChange` on a ref, not hardcoded chrome
+  arithmetic.** See `ConsumeTab.tsx` — robust to any future change in the
+  surrounding StatusBar/TabBar/HintBar heights.

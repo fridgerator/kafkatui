@@ -21,11 +21,14 @@ const GLOBAL_HINTS: Hint[] = [
  */
 const TAB_HINTS: Record<TabId, Hint[]> = {
   consume: [
+    { key: "t", label: "topic" },
+    { key: "e", label: "latest/earliest" },
+    { key: "↑↓", label: "scroll" },
+    { key: "␣", label: "pause/resume" },
+    { key: "c", label: "clear buffer" },
     { key: "/", label: "search" },
     { key: "@filter:", label: "query" },
-    { key: "↑↓", label: "scroll" },
     { key: "⏎", label: "inspect" },
-    { key: "␣", label: "pause" },
   ],
   groups: [
     { key: "↑↓", label: "select" },

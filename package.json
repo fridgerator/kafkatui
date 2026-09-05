@@ -6,14 +6,17 @@
   "description": "A read-only Kafka debugging TUI (OpenTUI + React on Bun)",
   "scripts": {
     "dev": "bun run src/index.tsx",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@opentui/core": "0.5.10",
     "@opentui/react": "0.5.10",
+    "kafkajs": "2.2.4",
     "react": "19.2.8",
     "react-devtools-core": "7.0.1",
-    "ws": "8.21.3"
+    "ws": "8.21.3",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/bun": "1.4.1",
