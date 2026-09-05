@@ -18,6 +18,12 @@ export function looksLikeConfluentAvro(buffer: Buffer): boolean {
   return buffer.length >= 5 && buffer[0] === CONFLUENT_MAGIC_BYTE
 }
 
+/** The 4-byte big-endian schema ID following the magic byte, for the detail view's schema info (spec §6.5). */
+export function extractConfluentSchemaId(buffer: Buffer): number | null {
+  if (!looksLikeConfluentAvro(buffer)) return null
+  return buffer.readUInt32BE(1)
+}
+
 /** True if decoding as UTF-8 introduced few/no replacement chars or stray control bytes. */
 function isPrintableText(text: string): boolean {
   if (text.length === 0) return true

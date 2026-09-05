@@ -9,8 +9,8 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 5 of 10 — search/filter bar.** One input, two modes: case-insensitive substring search, or a
-structured `@filter:` nested-path query language, both live-as-you-type against the buffer.
+**Phase 6 of 10 — message detail view.** `Enter` on a selected message opens a full pretty-printed,
+syntax-highlighted view with headers, schema info for Avro, a hex/base64 toggle, and clipboard copy.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
@@ -19,7 +19,7 @@ structured `@filter:` nested-path query language, both live-as-you-type against 
 | 3 | Consume tab: ephemeral consumer, ring buffer, windowed list | ✅ done |
 | 4 | Avro + Confluent Schema Registry | ✅ done |
 | 5 | Search bar + `@filter:` query language | ✅ done |
-| 6 | Message detail view | not started |
+| 6 | Message detail view | ✅ done |
 | 7 | Consumer groups tab: lag, sparklines | not started |
 | 8 | Topics tab: metadata + config | not started |
 | 9 | MSK IAM auth | not started |
@@ -104,6 +104,30 @@ Enabling either search mode means the whole retained buffer gets decoded and sca
 message (not just what's on screen) — the match count and "searching last N buffered" note in the
 status line make that scope visible, matching spec §6.3's guidance for the ring buffer's own limits.
 
+**Message detail** — `Enter` on a selected message replaces the list with a full detail pane:
+partition/offset/timestamp, the decoded key, decoded headers (`content-type`, `trace-id`, etc.), and
+the payload as syntax-highlighted pretty-printed JSON where applicable (JSON's grammar is simple enough
+that this is a small hand-rolled tokenizer rather than a heavier syntax-highlighting dependency — see
+[Conventions](#conventions)). For Avro messages with a schema registry configured, the schema ID shows
+immediately (read straight out of the wire bytes) and the subject/version fills in shortly after (a
+live lookup against the registry's REST API — `SchemaRegistry`'s own client doesn't expose this
+reverse lookup, so `kafka/decode/avro.ts` hits `GET /schemas/ids/{id}/versions` directly).
+
+| Key | Action |
+|---|---|
+| `r` | Cycle the payload view: decoded → hex → base64 → decoded |
+| `y` | Copy whatever's currently displayed to the clipboard |
+| `Escape` | Close, return to the list |
+
+Copy uses OSC 52 (if the terminal supports it — checked via `renderer.isOsc52Supported()`) or falls
+back to writing `~/.kafka-tui/last-copy.txt`, per spec's own suggested fallback, with a status message
+saying which happened. Copy always copies the *currently displayed* view, not always the raw bytes —
+if you're looking at pretty JSON and hit `y`, you get that text; switch to the hex or base64 view first
+if it's specifically the raw value you want.
+
+Scrolling through a long payload works via the arrow keys, `j`/`k`, Page Up/Down, and Home/End — that's
+OpenTUI's `<scrollbox>` handling it natively, not custom key-handling code here.
+
 ### Scripts
 
 | Script | Purpose |
@@ -186,7 +210,8 @@ src/
     ├── consume/
     │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state, live filtering
     │   ├── TopicBar.tsx       topic-name input + latest/earliest toggle
-    │   └── MessageList.tsx    pure presentational, renders exactly rowCount rows, substring highlighting
+    │   ├── MessageList.tsx    pure presentational, renders exactly rowCount rows, substring highlighting
+    │   └── MessageDetail.tsx  full pretty-print/hex/base64 view; owns its own useKeyboard (mount-scoped)
     ├── groups/            Consumer Groups tab (placeholder — phase 7)
     ├── topics/            Topics / cluster metadata tab (placeholder — phase 8)
     └── produce/           Produce placeholder (read-only in v1)
@@ -234,3 +259,14 @@ so upgrades should be deliberate rather than picked up by a range.
   `decoded.preview`.** The preview is truncated to 200 chars for the list
   row; searching against it would silently miss real matches past that
   point. See `getSearchableText()` in `kafka/types.ts`.
+- **A component that's only ever mounted while its own mode is active can own
+  its own `useKeyboard`, without a mode check inside it.** `MessageDetail` is
+  the example — mounting/unmounting *is* the scope guard. Contrast with
+  `TopicBar`/`SearchBox`, which are always mounted and need `ConsumeTab` to
+  arbitrate their keys centrally via `mode`.
+- **A pure grammar (JSON, in this case) is cheaper to hand-roll than to pull
+  in a general-purpose highlighter for.** `MessageDetail`'s JSON
+  tokenizer/highlighter is a small recursive function producing colored
+  `<span>`s — no new dependency, versus OpenTUI's tree-sitter-backed `<code>`
+  component, which needs a `syntaxStyle` and a grammar for something this
+  simple and fully known ahead of time.

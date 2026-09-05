@@ -11,3 +11,20 @@ export function toHexPreview(buffer: Buffer, maxBytes = 32): string {
   const truncated = buffer.length > maxBytes
   return `${hex}${truncated ? " …" : ""} (${buffer.length} bytes)`
 }
+
+/** Classic offset/hex/ASCII-gutter dump of the whole buffer, for the detail view's raw toggle. */
+export function toFullHexDump(buffer: Buffer): string {
+  if (buffer.length === 0) return "(empty)"
+
+  const lines: string[] = []
+  for (let offset = 0; offset < buffer.length; offset += 16) {
+    const chunk = buffer.subarray(offset, offset + 16)
+    const hex = Array.from(chunk, (b) => b.toString(16).padStart(2, "0"))
+      .join(" ")
+      .padEnd(47)
+    const ascii = Array.from(chunk, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : "."))
+      .join("")
+    lines.push(`${offset.toString(16).padStart(8, "0")}  ${hex}  ${ascii}`)
+  }
+  return lines.join("\n")
+}

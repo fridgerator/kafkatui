@@ -12,10 +12,11 @@ import { useSchemaRegistry } from "../../kafka/SchemaRegistryContext"
 import { getOrDecode, getSearchableText, type BufferedMessage, type ConnectionState, type RawMessage } from "../../kafka/types"
 import { SearchBox } from "../SearchBox"
 import { theme } from "../../theme/monokai"
+import { MessageDetail } from "./MessageDetail"
 import { MessageList } from "./MessageList"
 import { TopicBar } from "./TopicBar"
 
-type Mode = "browse" | "editingTopic" | "editingSearch"
+type Mode = "browse" | "editingTopic" | "editingSearch" | "detail"
 
 const FILTER_PREFIX = "@filter:"
 
@@ -66,7 +67,7 @@ function compileQuery(query: string): { matcher: Matcher | null; error: string |
 
 export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange }: ConsumeTabProps) {
   const kafka = useKafkaClient()
-  const schemaRegistry = useSchemaRegistry()
+  const { client: schemaRegistryClient, config: schemaRegistryConfig } = useSchemaRegistry()
 
   const ringBufferRef = useRef(new RingBuffer<BufferedMessage>(ringBufferSize))
   const pendingRef = useRef<RawMessage[]>([])
@@ -84,6 +85,8 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
 
   const [searchDraft, setSearchDraft] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
+
+  const [detailSlot, setDetailSlot] = useState<RingBufferSlot<BufferedMessage> | null>(null)
 
   const [rowCount, setRowCount] = useState(1)
   const [viewportStartSeq, setViewportStartSeq] = useState(0)
@@ -119,7 +122,9 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   }, [connection, activeTopic, onStatusChange])
 
   useEffect(() => {
-    onInputActiveChange(mode !== "browse")
+    // "detail" isn't a text input — quitting or switching tabs while viewing a message
+    // should still work; only the two text-entry modes need to block global shortcuts.
+    onInputActiveChange(mode === "editingTopic" || mode === "editingSearch")
   }, [mode, onInputActiveChange])
 
   // Measure available rows via the renderer's own size-change event rather than
@@ -174,10 +179,10 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           // await a promise). Kicked off here instead — still off the render path,
           // still before any setState below triggers a re-render — with `decoded` set
           // to a synchronous "pending" placeholder in the meantime.
-          if (schemaRegistry && raw.value && looksLikeConfluentAvro(raw.value)) {
+          if (schemaRegistryClient && raw.value && looksLikeConfluentAvro(raw.value)) {
             const value = raw.value
             slot.value.decoded = { kind: "pending", preview: "⏳ decoding avro…" }
-            void decodeAvroMessage(schemaRegistry, value).then((decoded) => {
+            void decodeAvroMessage(schemaRegistryClient, value).then((decoded) => {
               slot.value.decoded = decoded
               setTick((t) => t + 1)
             })
@@ -267,7 +272,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         previousStopRef.current = handle.stop()
       }
     }
-  }, [connectRequest, kafka, ringBufferSize, schemaRegistry])
+  }, [connectRequest, kafka, ringBufferSize, schemaRegistryClient])
 
   const handleSubmitTopic = useCallback(
     (value: string) => {
@@ -327,6 +332,14 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       return
     }
 
+    if (mode === "detail") {
+      // MessageDetail owns its own useKeyboard (escape/r/y) since it's only ever mounted
+      // while this mode is active — mounting is already the scope guard, so nothing needs
+      // handling here. This still has to exist so browse-mode keys (c/space/up/down/...)
+      // don't also fire underneath the open detail pane.
+      return
+    }
+
     switch (key.name) {
       case "t":
         // Starts blank rather than prefilled with the active topic — the common case
@@ -344,6 +357,21 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       case "e":
         setFromBeginning((v) => !v)
         break
+      case "return": {
+        if (selectedSeq === null) break
+        // Holds the slot object directly rather than re-looking it up by seq later —
+        // if the ring buffer evicts this seq while the pane is open, the object itself
+        // isn't destroyed (JS keeps it alive via this reference), so the detail view is
+        // naturally immune to eviction (decision 2).
+        const matches = matchesRef.current
+        const slot = matches
+          ? matches.find((m) => m.seq === selectedSeq)
+          : ringBufferRef.current.getBySeq(selectedSeq)
+        if (!slot) break
+        setDetailSlot(slot)
+        setMode("detail")
+        break
+      }
       case "space":
         setFollowing((was) => {
           const now = !was
@@ -436,6 +464,19 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           : "Waiting for messages…"
 
   const displayError = errorMessage ?? queryError
+
+  if (mode === "detail" && detailSlot) {
+    return (
+      <MessageDetail
+        slot={detailSlot}
+        schemaRegistryConfig={schemaRegistryConfig}
+        onClose={() => {
+          setMode("browse")
+          setDetailSlot(null)
+        }}
+      />
+    )
+  }
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden" }}>

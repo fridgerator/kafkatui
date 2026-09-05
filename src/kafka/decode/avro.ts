@@ -13,6 +13,51 @@ export function createSchemaRegistryClient(config: SchemaRegistryConfig | undefi
   return new SchemaRegistry({ host: config.url, auth })
 }
 
+interface SchemaSubjectVersion {
+  subject: string
+  version: number
+}
+
+const schemaSubjectVersionCache = new Map<string, SchemaSubjectVersion[]>()
+
+function basicAuthHeader(config: SchemaRegistryConfig): Record<string, string> {
+  if (!config.auth) return {}
+  const encoded = Buffer.from(`${config.auth.username}:${config.auth.password}`).toString("base64")
+  return { Authorization: `Basic ${encoded}` }
+}
+
+/**
+ * `SchemaRegistry`'s client only supports subject+version → ID, not the
+ * reverse — this hits Confluent's REST API directly for "given this ID, what
+ * subject/version is it" (spec §6.5). Verified against a real registry
+ * (`GET /schemas/ids/{id}/versions` → `[{subject, version}]`) rather than
+ * assumed from Confluent's docs. Never throws: a network failure or 404 (a
+ * schema ID with no registered subject, unusual but possible) just yields
+ * `null` — this is supplementary detail-view info, not something that should
+ * block the rest of the pane from rendering.
+ */
+export async function fetchSchemaSubjectVersions(
+  config: SchemaRegistryConfig,
+  schemaId: number,
+): Promise<SchemaSubjectVersion[] | null> {
+  const cacheKey = `${config.url}:${schemaId}`
+  const cached = schemaSubjectVersionCache.get(cacheKey)
+  if (cached) return cached
+
+  try {
+    const res = await fetch(`${config.url}/schemas/ids/${schemaId}/versions`, {
+      headers: basicAuthHeader(config),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return null
+    const versions = (await res.json()) as SchemaSubjectVersion[]
+    schemaSubjectVersionCache.set(cacheKey, versions)
+    return versions
+  } catch {
+    return null
+  }
+}
+
 const CIRCUIT_BREAKER_THRESHOLD = 5
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000
 

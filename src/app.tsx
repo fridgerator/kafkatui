@@ -1,4 +1,3 @@
-import type { SchemaRegistry } from "@kafkajs/confluent-schema-registry"
 import type { Kafka } from "kafkajs"
 import { useKeyboard, useRenderer } from "@opentui/react"
 import { useCallback, useState } from "react"
@@ -10,7 +9,7 @@ import { GroupsTab } from "./components/groups/GroupsTab"
 import { ProduceTab } from "./components/produce/ProduceTab"
 import { TopicsTab } from "./components/topics/TopicsTab"
 import { KafkaClientProvider } from "./kafka/KafkaClientContext"
-import { SchemaRegistryProvider } from "./kafka/SchemaRegistryContext"
+import { SchemaRegistryProvider, type SchemaRegistryHandle } from "./kafka/SchemaRegistryContext"
 import { theme } from "./theme/monokai"
 
 /**
@@ -51,7 +50,7 @@ function TabContent({
 interface AppProps {
   profileName: string
   kafka: Kafka
-  schemaRegistry: SchemaRegistry | null
+  schemaRegistry: SchemaRegistryHandle
   ringBufferSize: number
 }
 
@@ -101,7 +100,7 @@ export function App({ profileName, kafka, schemaRegistry, ringBufferSize }: AppP
 
   return (
     <KafkaClientProvider client={kafka}>
-      <SchemaRegistryProvider client={schemaRegistry}>
+      <SchemaRegistryProvider value={schemaRegistry}>
         <box
           style={{
             flexDirection: "column",

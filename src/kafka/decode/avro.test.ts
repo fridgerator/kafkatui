@@ -1,6 +1,7 @@
 import { SchemaRegistry, SchemaType } from "@kafkajs/confluent-schema-registry"
 import { describe, expect, test } from "bun:test"
-import { decodeAvroMessage } from "./avro"
+import { extractConfluentSchemaId } from "./decodeMessage"
+import { decodeAvroMessage, fetchSchemaSubjectVersions } from "./avro"
 
 const REGISTRY_URL = "http://localhost:8081"
 
@@ -74,5 +75,35 @@ describe.skipIf(!registryAvailable)("decodeAvroMessage (against a real local sch
     }
 
     expect(lastResult.preview).toContain("schema registry unreachable")
+  })
+
+  test("extractConfluentSchemaId reads the real schema ID out of a real encoded message", async () => {
+    const { id } = await registry.register(
+      { type: SchemaType.AVRO, schema: JSON.stringify(testSchema) },
+      { subject: "avro-test-decode-message-value" },
+    )
+    const encoded = await registry.encode(id, { id: "x", count: 1 })
+    expect(extractConfluentSchemaId(encoded)).toBe(id)
+  })
+
+  test("fetchSchemaSubjectVersions resolves the real subject/version for a registered schema", async () => {
+    const { id } = await registry.register(
+      { type: SchemaType.AVRO, schema: JSON.stringify(testSchema) },
+      { subject: "avro-test-decode-message-value" },
+    )
+    const versions = await fetchSchemaSubjectVersions({ url: REGISTRY_URL }, id)
+    expect(versions).not.toBeNull()
+    expect(versions?.[0]?.subject).toBe("avro-test-decode-message-value")
+    expect(typeof versions?.[0]?.version).toBe("number")
+  })
+
+  test("fetchSchemaSubjectVersions returns null (never throws) for a nonexistent schema ID", async () => {
+    const versions = await fetchSchemaSubjectVersions({ url: REGISTRY_URL }, 999999999)
+    expect(versions).toBeNull()
+  })
+
+  test("fetchSchemaSubjectVersions returns null (never throws) against an unreachable registry", async () => {
+    const versions = await fetchSchemaSubjectVersions({ url: "http://127.0.0.1:1" }, 1)
+    expect(versions).toBeNull()
   })
 })

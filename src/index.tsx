@@ -26,7 +26,10 @@ try {
 
 const { profile, ringBufferSize } = loaded
 const kafka = createKafkaClient(profile)
-const schemaRegistry = createSchemaRegistryClient(profile.schemaRegistry)
+const schemaRegistry = {
+  client: createSchemaRegistryClient(profile.schemaRegistry),
+  config: profile.schemaRegistry,
+}
 
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,

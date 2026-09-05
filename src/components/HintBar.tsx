@@ -29,6 +29,8 @@ const TAB_HINTS: Record<TabId, Hint[]> = {
     { key: "/", label: "search" },
     { key: "@filter:", label: "query" },
     { key: "⏎", label: "inspect" },
+    { key: "r", label: "raw view (in detail)" },
+    { key: "y", label: "copy (in detail)" },
   ],
   groups: [
     { key: "↑↓", label: "select" },
