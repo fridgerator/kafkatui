@@ -8,6 +8,7 @@ const KIND_COLOR = {
   text: theme.fg,
   binary: theme.warning,
   empty: theme.fgDim,
+  pending: theme.fgDim,
 } as const
 
 function formatTime(timestamp: string): string {

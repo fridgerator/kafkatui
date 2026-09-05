@@ -9,16 +9,15 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 3 of 10 — Consume tab core.** Pick a topic, tail it live against a real ring buffer with a
-manually-windowed list — JSON and plain text decode; Avro correctly falls back to a hex preview until
-phase 4.
+**Phase 4 of 10 — Avro decode.** `orders.avro` now decodes into real, readable JSON previews via the
+Confluent Schema Registry, same as `orders.json`.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
 | 1 | Tab shell, theme tokens, status/hint bars | ✅ done |
 | 2 | Local Kafka stack (docker-compose + synthetic producer) | ✅ done |
 | 3 | Consume tab: ephemeral consumer, ring buffer, windowed list | ✅ done |
-| 4 | Avro + Confluent Schema Registry | not started |
+| 4 | Avro + Confluent Schema Registry | ✅ done |
 | 5 | Search bar + `@filter:` query language | not started |
 | 6 | Message detail view | not started |
 | 7 | Consumer groups tab: lag, sparklines | not started |
@@ -71,13 +70,19 @@ Switching to another tab disconnects the ephemeral consumer; returning to Consum
 (re-enter the topic). This is a deliberate v1 simplification, not a bug — see the plan notes if you
 want tails to persist across tabs.
 
+**Avro decode**: `orders.avro` (or any topic with Confluent wire-format messages) decodes into the
+same JSON-preview format as plain JSON topics, as long as the profile has `schemaRegistry` configured
+(spec §3). Without one configured, or if the registry is unreachable, it falls back to a hex/binary
+preview with a clear reason rather than crashing — a small circuit breaker stops hammering a dead
+registry with an HTTP call per message after 5 consecutive failures, retrying again after 30s.
+
 ### Scripts
 
 | Script | Purpose |
 |---|---|
 | `bun run dev` | Run the TUI |
 | `bun run typecheck` | `tsc --noEmit` |
-| `bun run test` | Unit tests (`bun test`) — ring buffer, decode dispatch, config loader |
+| `bun run test` | Unit tests — ring buffer, decode dispatch, config loader, Avro (needs the local stack up; skips cleanly otherwise) |
 
 ## Local Kafka stack
 
@@ -133,10 +138,12 @@ src/
 ├── kafka/
 │   ├── types.ts           RawMessage, BufferedMessage, ConnectionState
 │   ├── client.ts          createKafkaClient(profile) — "none" auth implemented, others stubbed
-│   ├── KafkaClientContext.tsx  shared Kafka client instance for all tabs
+│   ├── KafkaClientContext.tsx       shared Kafka client instance for all tabs
+│   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
 │   ├── consume.ts         ephemeral no-commit consumer wrapper
 │   └── decode/
-│       ├── decodeMessage.ts   magic-byte stub → JSON → text → hex, never throws
+│       ├── decodeMessage.ts   sync dispatch: JSON → text → hex, never throws
+│       ├── avro.ts            async Avro decode + circuit breaker (unit tested against the real registry)
 │       └── hexDump.ts
 ├── buffer/
 │   └── ringBuffer.ts      seq-anchored circular buffer (unit tested)
@@ -180,3 +187,9 @@ so upgrades should be deliberate rather than picked up by a range.
 - **Measure available rows via `onSizeChange` on a ref, not hardcoded chrome
   arithmetic.** See `ConsumeTab.tsx` — robust to any future change in the
   surrounding StatusBar/TabBar/HintBar heights.
+- **Decode work that needs I/O (Avro's schema fetch) can't happen inline in a
+  render function.** It's kicked off eagerly in `ConsumeTab`'s flush-drain
+  loop instead — still off the render path — with a synchronous `"pending"`
+  placeholder set first, and the real result (plus a `tick` bump to
+  re-render) applied when the promise resolves. `decodeMessage()` itself
+  stays fully synchronous and pure.

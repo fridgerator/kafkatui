@@ -12,6 +12,7 @@ import { createRoot } from "@opentui/react"
 import { App } from "./app"
 import { ConfigError, loadConfig } from "./config/loadConfig"
 import { createKafkaClient } from "./kafka/client"
+import { createSchemaRegistryClient } from "./kafka/decode/avro"
 import { theme } from "./theme/monokai"
 
 let loaded: ReturnType<typeof loadConfig>
@@ -25,6 +26,7 @@ try {
 
 const { profile, ringBufferSize } = loaded
 const kafka = createKafkaClient(profile)
+const schemaRegistry = createSchemaRegistryClient(profile.schemaRegistry)
 
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,
@@ -33,4 +35,11 @@ const renderer = await createCliRenderer({
   backgroundColor: theme.bg,
 })
 
-createRoot(renderer).render(<App profileName={profile.name} kafka={kafka} ringBufferSize={ringBufferSize} />)
+createRoot(renderer).render(
+  <App
+    profileName={profile.name}
+    kafka={kafka}
+    schemaRegistry={schemaRegistry}
+    ringBufferSize={ringBufferSize}
+  />,
+)

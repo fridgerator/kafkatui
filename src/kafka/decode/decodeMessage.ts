@@ -1,6 +1,6 @@
 import { toHexPreview } from "./hexDump"
 
-export type DecodedKind = "json" | "text" | "binary" | "empty"
+export type DecodedKind = "json" | "text" | "binary" | "empty" | "pending"
 
 export interface DecodedMessage {
   kind: DecodedKind
@@ -12,7 +12,8 @@ export interface DecodedMessage {
 const CONFLUENT_MAGIC_BYTE = 0x0
 const UTF8_REPLACEMENT_CHAR_CODE = 0xfffd
 
-function looksLikeConfluentAvro(buffer: Buffer): boolean {
+/** Exported so `ConsumeTab` can trigger the async Avro path (`kafka/decode/avro.ts`) on the same test. */
+export function looksLikeConfluentAvro(buffer: Buffer): boolean {
   // Magic byte + 4-byte schema ID (spec §6.2).
   return buffer.length >= 5 && buffer[0] === CONFLUENT_MAGIC_BYTE
 }
@@ -30,7 +31,8 @@ function isPrintableText(text: string): boolean {
   return badChars / text.length < 0.05
 }
 
-function truncate(text: string, maxLength = 200): string {
+/** Exported so `kafka/decode/avro.ts` produces previews consistent with the JSON path. */
+export function truncate(text: string, maxLength = 200): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength)}…`
 }
 
@@ -39,10 +41,15 @@ function truncate(text: string, maxLength = 200): string {
  * fallback. Every branch is caught — a decode failure must never throw into
  * the render loop.
  *
- * The magic-byte branch is a stub: phase 4 adds the real Avro decode there.
- * Until then, Avro messages correctly fall through to the binary/hex
- * preview — that's the right behavior for a decoder that doesn't know Avro
- * yet, not a bug.
+ * This function stays synchronous and never handles Avro itself — a schema
+ * fetch is a network call, which can't happen inline during a render. The
+ * real Avro decode (`kafka/decode/avro.ts`) runs eagerly at ingestion time in
+ * `ConsumeTab`'s flush loop instead, and overwrites `BufferedMessage.decoded`
+ * once it resolves. By the time this function runs against an Avro message,
+ * that either already happened (this branch is never reached — `decoded` is
+ * already set), or no schema registry is configured, in which case falling
+ * through to the binary/hex preview below is the correct, intentional
+ * fallback, not a bug.
  */
 export function decodeMessage(buffer: Buffer | null): DecodedMessage {
   if (buffer === null || buffer.length === 0) {
@@ -50,11 +57,6 @@ export function decodeMessage(buffer: Buffer | null): DecodedMessage {
   }
 
   try {
-    if (looksLikeConfluentAvro(buffer)) {
-      // TODO(phase 4): decode via @kafkajs/confluent-schema-registry using the
-      // 4-byte schema ID that follows the magic byte, then return { kind: "json", ... }.
-    }
-
     const text = buffer.toString("utf8")
 
     try {

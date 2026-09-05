@@ -3,7 +3,10 @@ import { useKeyboard } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { RingBuffer } from "../../buffer/ringBuffer"
 import { startConsuming, type ConsumeHandle } from "../../kafka/consume"
+import { decodeAvroMessage } from "../../kafka/decode/avro"
+import { looksLikeConfluentAvro } from "../../kafka/decode/decodeMessage"
 import { useKafkaClient } from "../../kafka/KafkaClientContext"
+import { useSchemaRegistry } from "../../kafka/SchemaRegistryContext"
 import type { BufferedMessage, ConnectionState, RawMessage } from "../../kafka/types"
 import { theme } from "../../theme/monokai"
 import { MessageList } from "./MessageList"
@@ -29,6 +32,7 @@ interface ConsumeTabProps {
 
 export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange }: ConsumeTabProps) {
   const kafka = useKafkaClient()
+  const schemaRegistry = useSchemaRegistry()
 
   const ringBufferRef = useRef(new RingBuffer<BufferedMessage>(ringBufferSize))
   const pendingRef = useRef<RawMessage[]>([])
@@ -106,7 +110,22 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       const pending = pendingRef.current
       if (pending.length > 0) {
         const buffer = ringBufferRef.current
-        for (const raw of pending) buffer.push(raw)
+        for (const raw of pending) {
+          const slot = buffer.push(raw)
+          // Avro decode needs an HTTP round-trip on a cache miss, so it can't happen
+          // inline like the JSON/text paths in decodeMessage() (a render function can't
+          // await a promise). Kicked off here instead — still off the render path,
+          // still before any setState below triggers a re-render — with `decoded` set
+          // to a synchronous "pending" placeholder in the meantime.
+          if (schemaRegistry && raw.value && looksLikeConfluentAvro(raw.value)) {
+            const value = raw.value
+            slot.value.decoded = { kind: "pending", preview: "⏳ decoding avro…" }
+            void decodeAvroMessage(schemaRegistry, value).then((decoded) => {
+              slot.value.decoded = decoded
+              setTick((t) => t + 1)
+            })
+          }
+        }
         pendingRef.current = []
         sentSinceLastMeasure += pending.length
 
@@ -169,7 +188,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         previousStopRef.current = handle.stop()
       }
     }
-  }, [connectRequest, kafka, ringBufferSize])
+  }, [connectRequest, kafka, ringBufferSize, schemaRegistry])
 
   const handleSubmitTopic = useCallback(
     (value: string) => {
