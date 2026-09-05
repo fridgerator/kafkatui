@@ -9,9 +9,9 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 7 of 10 — Consumer Groups tab.** Lists every real consumer group with a live-polled aggregate
-lag sparkline, drills into members/per-partition lag on `Enter`, and flags groups whose lag isn't
-decreasing.
+**Phase 8 of 10 — Topics tab.** Lists every user-facing topic (partition count, replication factor),
+drills into per-partition leader/ISR/replica/offset detail with a live throughput sparkline on
+`Enter`, flags under-replicated partitions, and shows the full topic config sorted non-default-first.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
@@ -22,7 +22,7 @@ decreasing.
 | 5 | Search bar + `@filter:` query language | ✅ done |
 | 6 | Message detail view | ✅ done |
 | 7 | Consumer groups tab: lag, sparklines | ✅ done |
-| 8 | Topics tab: metadata + config | not started |
+| 8 | Topics tab: metadata + config | ✅ done |
 | 9 | MSK IAM auth | not started |
 | 10 | Produce placeholder, NDJSON export, polish | not started |
 
@@ -143,6 +143,25 @@ trend window to fill. Switching away from the Groups tab stops polling and disco
 client entirely, the same as Consume tab's connection (see [Conventions](#conventions)) — coming back
 starts fresh.
 
+**Topics tab** lists every non-internal topic (name, partition count, replication factor) — `↑`/`↓` to
+select, `Enter` to drill into a per-partition table (leader, ISR, replicas, earliest/latest offset,
+message count, a live throughput sparkline) plus the full config panel, `Escape` to go back. Unlike
+Groups, the list itself doesn't poll — partition count and replication factor are structural and don't
+change mid-session, so switching tabs away and back is the implicit refresh; only the open detail's
+topic polls, every 5 seconds, for offsets and throughput.
+
+Internal topics (`__consumer_offsets`, `__transaction_state`, Confluent Schema Registry's `_schemas`)
+are filtered out of the list — a named exclusion (`startsWith("__")` or exactly `_schemas`), not a
+blanket "starts with underscore" rule, so a real user topic that happens to start with `_` still shows
+up. A partition where fewer replicas are in-sync than assigned (`isr.length < replicas.length`) gets a
+`⚠ under-replicated` flag in the partition table — spec §8 doesn't explicitly call this out, but it's
+free on data the partition browser fetches anyway. (This single-broker local stack can't naturally
+produce one; the flag's logic is verified at the unit level, not live.)
+
+The config panel shows every entry `describeConfigs` returns (no curated allowlist) — non-default
+entries first and in a distinct color, then the rest, since `isDefault: false` is a ready-made signal
+for "an operator actually changed this" without hardcoding a list of "the configs that matter."
+
 ### Scripts
 
 | Script | Purpose |
@@ -162,8 +181,8 @@ continuously writes realistic nested "order" data to three topics, one encoding 
 | `orders.avro` | Confluent wire-format Avro | same shape, schema registered as `orders.avro-value` |
 | `logs.text` | plain text | log-line style messages, exercises the non-JSON decode fallback |
 
-Each topic has 4 partitions and a random key per message, so there's real data for the partition-skew
-view (phase 8) and the `@filter:` nested-path examples (phase 5) once those land.
+Each topic has 4 partitions and a random key per message, so there's real data for the Topics tab's
+partition/throughput view and the `@filter:` nested-path examples.
 
 ```sh
 docker compose -f docker/docker-compose.yml up -d
@@ -209,6 +228,7 @@ src/
 │   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
 │   ├── consume.ts         ephemeral no-commit consumer wrapper
 │   ├── groups.ts          describeGroups/fetchOffsets orchestration + pure lag math (unit tested against the real broker)
+│   ├── topics.ts          listTopics/fetchTopicMetadata/describeConfigs orchestration + isInternalTopic/isUnderReplicated (unit tested against the real broker)
 │   └── decode/
 │       ├── decodeMessage.ts   sync dispatch: JSON → text → hex, never throws
 │       ├── avro.ts            async Avro decode + circuit breaker (unit tested against the real registry)
@@ -232,7 +252,9 @@ src/
     ├── groups/
     │   ├── GroupsTab.tsx      owns the 5s poll, per-group/per-partition lag history, sort/select
     │   └── GroupDetail.tsx    members + per-partition lag table; owns its own useKeyboard (mount-scoped)
-    ├── topics/            Topics / cluster metadata tab (placeholder — phase 8)
+    ├── topics/
+    │   ├── TopicsTab.tsx      lists non-internal topics; no polling (structural metadata, not lag)
+    │   └── TopicDetail.tsx    partition table + config panel + throughput sparklines; owns its own useKeyboard (mount-scoped), 5s poll for the open topic only
     └── produce/           Produce placeholder (read-only in v1)
 
 docker/
