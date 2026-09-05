@@ -9,9 +9,12 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 8 of 10 — Topics tab.** Lists every user-facing topic (partition count, replication factor),
-drills into per-partition leader/ISR/replica/offset detail with a live throughput sparkline on
-`Enter`, flags under-replicated partitions, and shows the full topic config sorted non-default-first.
+**Phase 9 of 10 — MSK IAM auth.** `auth.type: "iam"` profiles now connect for real, using
+`aws-msk-iam-sasl-signer-js` + SASL/OAUTHBEARER with a caching/early-refreshing token provider. ⚠️
+**Unverified against a real MSK cluster** — this development environment has no AWS credentials or MSK
+endpoint to test against, so this phase's verification is unit-tests-only (see
+[MSK IAM auth](#msk-iam-auth) below). Try it against a real cluster and file/fix anything that
+doesn't work as expected.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
@@ -23,7 +26,7 @@ drills into per-partition leader/ISR/replica/offset detail with a live throughpu
 | 6 | Message detail view | ✅ done |
 | 7 | Consumer groups tab: lag, sparklines | ✅ done |
 | 8 | Topics tab: metadata + config | ✅ done |
-| 9 | MSK IAM auth | not started |
+| 9 | MSK IAM auth | ✅ done (unverified against real MSK — see above) |
 | 10 | Produce placeholder, NDJSON export, polish | not started |
 
 ## Requirements
@@ -162,6 +165,31 @@ The config panel shows every entry `describeConfigs` returns (no curated allowli
 entries first and in a distinct color, then the rest, since `isDefault: false` is a ready-made signal
 for "an operator actually changed this" without hardcoding a list of "the configs that matter."
 
+### MSK IAM auth
+
+Set `auth.type: "iam"` on a profile (with `region`, and optionally a named `profile` for a non-default
+AWS credential profile) to connect to a real MSK cluster. Under the hood, `src/kafka/client.ts` sets
+`ssl: true` and `sasl: { mechanism: 'oauthbearer', oauthBearerProvider }`, where the provider comes
+from `src/kafka/auth/mskIam.ts` — **not** kafkajs's built-in `sasl: { mechanism: 'aws' }`, which wants
+static access keys and a broker-side LoginModule MSK doesn't run; confirmed by reading kafkajs's own
+`awsIam.js` authenticator, not assumed from memory.
+
+The token provider caches the signed token and only regenerates it once within 60 seconds of its fixed
+15-minute expiry (kafkajs calls the provider fresh on every new connection's handshake, so without
+caching, this app's poll-driven admin reconnects would hit AWS credential resolution far more than
+necessary). Your config's `profile` field routes to a genuinely different signer function
+(`generateAuthTokenFromProfile` vs. `generateAuthToken`) — see
+[Conventions](#conventions) for why that split exists.
+
+**⚠️ Not yet verified against a real MSK cluster.** This was built and unit-tested (`mskIam.test.ts`,
+`client.test.ts`) with an injectable fake token source — no AWS credentials or MSK endpoint were
+available in the development environment to test the actual SASL handshake, credential resolution, or
+broker connectivity end-to-end. If something doesn't work against your cluster, the likely places to
+look are: the exact broker port (MSK IAM is typically `9098`, not `9092`), IAM permissions for
+`kafka-cluster:Connect` on the cluster/topics, and whether your credential chain (env vars, named
+profile, SSO, instance role) resolves correctly outside this tool first (e.g. `aws sts
+get-caller-identity`).
+
 ### Scripts
 
 | Script | Purpose |
@@ -223,12 +251,14 @@ src/
 │   └── loadConfig.ts      --config/--profile flags, YAML parse, ${ENV_VAR} interpolation
 ├── kafka/
 │   ├── types.ts           RawMessage, BufferedMessage, ConnectionState, getOrDecode(), getSearchableText()
-│   ├── client.ts          createKafkaClient(profile) — "none" auth implemented, others stubbed
+│   ├── client.ts          createKafkaClient(profile) — "none" and "iam" implemented, sasl-scram/sasl-plain stubbed
 │   ├── KafkaClientContext.tsx       shared Kafka client instance for all tabs
 │   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
 │   ├── consume.ts         ephemeral no-commit consumer wrapper
 │   ├── groups.ts          describeGroups/fetchOffsets orchestration + pure lag math (unit tested against the real broker)
 │   ├── topics.ts          listTopics/fetchTopicMetadata/describeConfigs orchestration + isInternalTopic/isUnderReplicated (unit tested against the real broker)
+│   ├── auth/
+│   │   └── mskIam.ts      SASL/OAUTHBEARER token provider for MSK IAM auth — caching/early refresh, injectable token source (unit tested with a fake source; not yet tested against real MSK)
 │   └── decode/
 │       ├── decodeMessage.ts   sync dispatch: JSON → text → hex, never throws
 │       ├── avro.ts            async Avro decode + circuit breaker (unit tested against the real registry)
@@ -323,3 +353,9 @@ so upgrades should be deliberate rather than picked up by a range.
   own test fixtures — before the group coordinator finishes processing the
   `LeaveGroup`. `groups.test.ts`'s cleanup retries once after a short delay
   rather than assuming the first attempt succeeded.
+- **`aws-msk-iam-sasl-signer-js`'s `generateAuthToken({ region, awsProfileName })` silently
+  ignores `awsProfileName`** — confirmed by reading the compiled package, not its README's type
+  signature. A named credential profile only takes effect via the separate
+  `generateAuthTokenFromProfile({ region, awsProfileName })` function. `mskIam.ts` branches on
+  `auth.profile` to call the right one; passing a profile name as an option to the wrong function
+  would silently fall back to the default credential chain instead of erroring.

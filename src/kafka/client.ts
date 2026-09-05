@@ -1,5 +1,6 @@
 import { Kafka, logLevel } from "kafkajs"
 import type { ClusterProfile } from "../config/types"
+import { createMskIamOauthBearerProvider } from "./auth/mskIam"
 
 export class UnsupportedAuthError extends Error {}
 
@@ -11,11 +12,20 @@ export function createKafkaClient(profile: ClusterProfile): Kafka {
       return new Kafka({ clientId, brokers: profile.brokers, logLevel: logLevel.NOTHING })
 
     case "iam":
-      // Spec §4: aws-msk-iam-sasl-signer-js + sasl.mechanism 'oauthbearer'. Lands in phase 9,
-      // built and tested against real MSK last so AWS-specific debugging stays isolated.
-      throw new UnsupportedAuthError(
-        `Profile "${profile.name}" uses auth.type "iam", which isn't implemented until phase 9.`,
-      )
+      // Spec §4: aws-msk-iam-sasl-signer-js + sasl.mechanism 'oauthbearer', not the built-in
+      // 'aws' mechanism (that one wants static keys and a broker-side LoginModule MSK doesn't
+      // have). TLS is required alongside SASL/OAUTHBEARER; the user's config supplies the
+      // correct MSK bootstrap string (typically port 9098) — this doesn't rewrite ports.
+      return new Kafka({
+        clientId,
+        brokers: profile.brokers,
+        ssl: true,
+        sasl: {
+          mechanism: "oauthbearer",
+          oauthBearerProvider: createMskIamOauthBearerProvider(profile.auth),
+        },
+        logLevel: logLevel.NOTHING,
+      })
 
     case "sasl-scram":
     case "sasl-plain":

@@ -13,6 +13,7 @@
     "@kafkajs/confluent-schema-registry": "4.1.0",
     "@opentui/core": "0.5.10",
     "@opentui/react": "0.5.10",
+    "aws-msk-iam-sasl-signer-js": "^1.0.3",
     "kafkajs": "2.2.4",
     "react": "19.2.8",
     "react-devtools-core": "7.0.1",
