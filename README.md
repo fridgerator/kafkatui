@@ -9,12 +9,13 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 1 of 10 — scaffold.** The UI shell runs; nothing talks to Kafka yet.
+**Phase 2 of 10 — local Kafka stack.** The local dev stack runs and is producing real data; the TUI
+still doesn't talk to Kafka yet (that's phase 3).
 
 | Phase | Scope | Status |
 |------:|-------|--------|
 | 1 | Tab shell, theme tokens, status/hint bars | ✅ done |
-| 2 | Local Kafka stack (docker-compose + synthetic producer) | not started |
+| 2 | Local Kafka stack (docker-compose + synthetic producer) | ✅ done |
 | 3 | Consume tab: ephemeral consumer, ring buffer, windowed list | not started |
 | 4 | Avro + Confluent Schema Registry | not started |
 | 5 | Search bar + `@filter:` query language | not started |
@@ -54,6 +55,47 @@ there for unbuilt features are advertised but not yet wired up.
 | `bun run dev` | Run the TUI |
 | `bun run typecheck` | `tsc --noEmit` |
 
+## Local Kafka stack
+
+A single-node KRaft-mode Kafka broker, a Confluent Schema Registry, and a synthetic producer that
+continuously writes realistic nested "order" data to three topics, one encoding each:
+
+| Topic | Encoding | Notes |
+|---|---|---|
+| `orders.json` | JSON | nested `items[].sku`, `customer.address.zip`, `customer.roles[]` |
+| `orders.avro` | Confluent wire-format Avro | same shape, schema registered as `orders.avro-value` |
+| `logs.text` | plain text | log-line style messages, exercises the non-JSON decode fallback |
+
+Each topic has 4 partitions and a random key per message, so there's real data for the partition-skew
+view (phase 8) and the `@filter:` nested-path examples (phase 5) once those land.
+
+```sh
+docker compose -f docker/docker-compose.yml up -d
+```
+
+This exposes the broker at `localhost:9092` and the registry at `localhost:8081` — matching the
+`dev-local` profile in [`config.example.yaml`](config.example.yaml) exactly, so once phase 3's config
+loader exists, `docker compose up` + `bun run dev --profile dev-local` is a working end-to-end loop
+with zero AWS dependency. Until then, point any Kafka client (`kcat -b localhost:9092 -t orders.json
+-C`, etc.) directly at those addresses to poke around.
+
+Produce rate is tunable — copy [`.env.example`](.env.example) to `.env` next to
+`docker/docker-compose.yml` to change it. By default it produces ~5 msgs/sec/topic, with a 5-second
+burst to ~100+ msgs/sec/topic once a minute, meant to stress-test phase 3's ring buffer once it exists.
+
+```sh
+docker compose -f docker/docker-compose.yml logs -f producer   # watch it run
+docker compose -f docker/docker-compose.yml down -v            # tear down, including volumes
+```
+
+**Known harmless log noise**, both from `kafkajs` itself (last published 2023, predates Bun) rather
+than anything in this repo: a one-time `TimeoutNegativeWarning` on startup (a real bug in kafkajs's
+`requestQueue.scheduleCheckPendingRequests`, which computes a negative `setTimeout` delay when nothing
+is actually throttled — Bun/Node just fire it immediately, so it's inert), and an `ERROR`-level
+"Topic creation errors" log line on container restart when the topics already exist (kafkajs's
+`admin.createTopics` already handles `TOPIC_ALREADY_EXISTS` internally and returns `false` rather than
+throwing — the connection layer just logs the raw broker response first).
+
 ## Project layout
 
 ```
@@ -69,6 +111,13 @@ src/
     ├── groups/            Consumer Groups tab
     ├── topics/            Topics / cluster metadata tab
     └── produce/           Produce placeholder (read-only in v1)
+
+docker/
+├── docker-compose.yml     broker + schema registry + producer
+└── producer/              synthetic producer (own package.json/lockfile, own container)
+    └── src/
+        ├── produce.ts     topic creation, schema registration, the three send loops
+        └── schema.ts      Avro schema + shared nested payload generator
 ```
 
 Dependency versions are pinned exactly. OpenTUI is pre-1.0 and ships frequently,

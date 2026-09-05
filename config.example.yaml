@@ -1,0 +1,30 @@
+# Example kafka-tui config (spec §3). Copy to ~/.kafka-tui/config.yaml, or
+# pass --config <path>, once the config loader lands in phase 3.
+#
+# `dev-local` matches docker/docker-compose.yml exactly: bring the stack up
+# with `docker compose -f docker/docker-compose.yml up -d` and this profile
+# points at it with zero further setup.
+
+profiles:
+  - name: dev-local
+    brokers:
+      - localhost:9092
+    auth:
+      type: none
+    schemaRegistry:
+      url: http://localhost:8081
+
+  - name: staging-msk
+    brokers:
+      - b-1.mycluster.abc123.kafka.us-east-1.amazonaws.com:9098
+    auth:
+      type: iam
+      region: us-east-1
+      profile: staging # optional named AWS profile; omit to use default chain
+    schemaRegistry:
+      url: https://schema-registry.internal.example.com
+      auth:
+        username: ${SCHEMA_REGISTRY_USER} # env var interpolation supported
+        password: ${SCHEMA_REGISTRY_PASS}
+
+defaultProfile: dev-local
