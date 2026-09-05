@@ -9,8 +9,9 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 6 of 10 — message detail view.** `Enter` on a selected message opens a full pretty-printed,
-syntax-highlighted view with headers, schema info for Avro, a hex/base64 toggle, and clipboard copy.
+**Phase 7 of 10 — Consumer Groups tab.** Lists every real consumer group with a live-polled aggregate
+lag sparkline, drills into members/per-partition lag on `Enter`, and flags groups whose lag isn't
+decreasing.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
@@ -20,7 +21,7 @@ syntax-highlighted view with headers, schema info for Avro, a hex/base64 toggle,
 | 4 | Avro + Confluent Schema Registry | ✅ done |
 | 5 | Search bar + `@filter:` query language | ✅ done |
 | 6 | Message detail view | ✅ done |
-| 7 | Consumer groups tab: lag, sparklines | not started |
+| 7 | Consumer groups tab: lag, sparklines | ✅ done |
 | 8 | Topics tab: metadata + config | not started |
 | 9 | MSK IAM auth | not started |
 | 10 | Produce placeholder, NDJSON export, polish | not started |
@@ -128,6 +129,20 @@ if it's specifically the raw value you want.
 Scrolling through a long payload works via the arrow keys, `j`/`k`, Page Up/Down, and Home/End — that's
 OpenTUI's `<scrollbox>` handling it natively, not custom key-handling code here.
 
+**Consumer Groups tab** polls every 5 seconds and lists every real consumer group — `↑`/`↓` to select,
+`Enter` to drill into members and a per-partition lag table, `Escape` to go back, `s` to toggle sorting
+between lag-descending (the default, per spec's own "sort by lag to spot a stuck consumer") and
+alphabetical. This tool's own Consume tab creates a throwaway `kafka-tui-<random>-<pid>` group every
+time it connects (never committing offsets); those are filtered out of this list entirely rather than
+cluttering it with the tool's own noise.
+
+A group gets a `⚠ stuck` badge when its total lag has been nonzero and non-decreasing for the last 3
+poll ticks (~15s) — deliberately a shorter window than the ~30-sample/2.5-minute history the sparklines
+themselves show, so a genuinely stuck consumer gets flagged quickly rather than waiting for the full
+trend window to fill. Switching away from the Groups tab stops polling and disconnects its admin
+client entirely, the same as Consume tab's connection (see [Conventions](#conventions)) — coming back
+starts fresh.
+
 ### Scripts
 
 | Script | Purpose |
@@ -193,6 +208,7 @@ src/
 │   ├── KafkaClientContext.tsx       shared Kafka client instance for all tabs
 │   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
 │   ├── consume.ts         ephemeral no-commit consumer wrapper
+│   ├── groups.ts          describeGroups/fetchOffsets orchestration + pure lag math (unit tested against the real broker)
 │   └── decode/
 │       ├── decodeMessage.ts   sync dispatch: JSON → text → hex, never throws
 │       ├── avro.ts            async Avro decode + circuit breaker (unit tested against the real registry)
@@ -207,12 +223,15 @@ src/
     ├── TabBar.tsx         tab strip + TabId definitions
     ├── HintBar.tsx        context-sensitive keybinding hints
     ├── SearchBox.tsx      the search/filter input (mode + draft/commit state live in ConsumeTab)
+    ├── Sparkline.tsx      sparklineChars() (pure, unit tested) + a thin <Sparkline> wrapper
     ├── consume/
     │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state, live filtering
     │   ├── TopicBar.tsx       topic-name input + latest/earliest toggle
     │   ├── MessageList.tsx    pure presentational, renders exactly rowCount rows, substring highlighting
     │   └── MessageDetail.tsx  full pretty-print/hex/base64 view; owns its own useKeyboard (mount-scoped)
-    ├── groups/            Consumer Groups tab (placeholder — phase 7)
+    ├── groups/
+    │   ├── GroupsTab.tsx      owns the 5s poll, per-group/per-partition lag history, sort/select
+    │   └── GroupDetail.tsx    members + per-partition lag table; owns its own useKeyboard (mount-scoped)
     ├── topics/            Topics / cluster metadata tab (placeholder — phase 8)
     └── produce/           Produce placeholder (read-only in v1)
 
@@ -270,3 +289,15 @@ so upgrades should be deliberate rather than picked up by a range.
   `<span>`s — no new dependency, versus OpenTUI's tree-sitter-backed `<code>`
   component, which needs a `syntaxStyle` and a grammar for something this
   simple and fully known ahead of time.
+- **Split I/O-driven modules into a pure core + a thin async shell.**
+  `groups.ts`'s `computeGroupSnapshot()` takes already-fetched data and does
+  the lag math with no network calls at all, fully unit-testable with
+  fabricated inputs; `fetchGroupSnapshots()` is the thin wrapper that makes
+  the real `describeGroups`/`fetchOffsets`/`fetchTopicOffsets` calls and
+  hands their results to it. Same split as `parseFilter`/`evaluateFilter`
+  and the decode/network boundary in `avro.ts`.
+- **A `deleteGroups()` call immediately after `consumer.disconnect()` can
+  transiently fail** — confirmed empirically while cleaning up this phase's
+  own test fixtures — before the group coordinator finishes processing the
+  `LeaveGroup`. `groups.test.ts`'s cleanup retries once after a short delay
+  rather than assuming the first attempt succeeded.
