@@ -43,7 +43,7 @@ function TabContent({
     case "topics":
       return <TopicsTab />
     case "produce":
-      return <ProduceTab />
+      return <ProduceTab onInputActiveChange={onInputActiveChange} />
   }
 }
 

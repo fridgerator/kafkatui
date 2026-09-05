@@ -1,7 +1,7 @@
 /**
  * Config schema (spec §3). All four auth types are modeled here so the schema
- * is complete now, but only `none` is implemented in `kafka/client.ts` —
- * `iam` lands in phase 9, `sasl-scram`/`sasl-plain` are unassigned in the spec's
+ * is complete now, but only `none` and `iam` are implemented in
+ * `kafka/client.ts` — `sasl-scram`/`sasl-plain` are unassigned in the spec's
  * build phases and stay unimplemented until asked for.
  */
 

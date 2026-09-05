@@ -9,12 +9,11 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 9 of 10 — MSK IAM auth.** `auth.type: "iam"` profiles now connect for real, using
-`aws-msk-iam-sasl-signer-js` + SASL/OAUTHBEARER with a caching/early-refreshing token provider. ⚠️
-**Unverified against a real MSK cluster** — this development environment has no AWS credentials or MSK
-endpoint to test against, so this phase's verification is unit-tests-only (see
-[MSK IAM auth](#msk-iam-auth) below). Try it against a real cluster and file/fix anything that
-doesn't work as expected.
+**All 10 planned phases are done.** The tool is feature-complete for v1: Consume, Consumer Groups, and
+Topics tabs are fully live against a real broker; MSK IAM auth is implemented but ⚠️ **unverified
+against a real MSK cluster** (see [MSK IAM auth](#msk-iam-auth) — this development environment had no
+AWS credentials or MSK endpoint to test against); Produce is a genuinely inert, navigable form shell by
+design (spec §1's own read-only non-goal for v1).
 
 | Phase | Scope | Status |
 |------:|-------|--------|
@@ -27,7 +26,7 @@ doesn't work as expected.
 | 7 | Consumer groups tab: lag, sparklines | ✅ done |
 | 8 | Topics tab: metadata + config | ✅ done |
 | 9 | MSK IAM auth | ✅ done (unverified against real MSK — see above) |
-| 10 | Produce placeholder, NDJSON export, polish | not started |
+| 10 | Produce placeholder, NDJSON export, polish | ✅ done |
 
 ## Requirements
 
@@ -55,10 +54,9 @@ missing `${ENV_VAR}` fails fast with a plain error on stderr before the TUI star
 | `Tab` / `Shift+Tab` | Cycle tabs |
 | `q` / `Ctrl+C` | Quit |
 
-Per-tab keys are listed in the hint bar at the bottom of the screen. Keys shown
-there for unbuilt features are advertised but not yet wired up. While a text
-input is focused (e.g. Consume's topic field), the global shortcuts above
-stand down so you can type freely — see [Conventions](#conventions).
+Per-tab keys are listed in the hint bar at the bottom of the screen. While a text input is focused
+(e.g. Consume's topic field, or a Produce tab field being edited), the global shortcuts above stand
+down so you can type freely — see [Conventions](#conventions).
 
 **Consume tab:**
 
@@ -69,6 +67,7 @@ stand down so you can type freely — see [Conventions](#conventions).
 | `↑` / `↓` | Move selection; `↑` pauses the live tail, `↓` to the bottom resumes it |
 | `Space` | Explicitly pause/resume following new messages |
 | `c` | Clear the buffer without disconnecting |
+| `x` | Export the current (filtered or full) buffer to NDJSON — see below |
 
 Switching to another tab disconnects the ephemeral consumer; returning to Consume starts fresh
 (re-enter the topic). This is a deliberate v1 simplification, not a bug — see the plan notes if you
@@ -132,6 +131,15 @@ if it's specifically the raw value you want.
 Scrolling through a long payload works via the arrow keys, `j`/`k`, Page Up/Down, and Home/End — that's
 OpenTUI's `<scrollbox>` handling it natively, not custom key-handling code here.
 
+**Export to NDJSON** — `x` in the Consume tab's list view writes whatever's currently matching the
+active search/filter (or the whole buffer, if none is active) to
+`~/.kafka-tui/exports/<topic>-<timestamp>-<random>.ndjson`, one JSON object per line. Same
+"act on what you're looking at" philosophy as `y` in the message detail view. Each line has
+`topic`/`partition`/`offset`/`timestamp`/`key`/`headers`, and `value` — JSON and Avro messages keep
+their real decoded structure there, plain text keeps its raw string, and anything else (binary, or an
+Avro message whose registry lookup was still pending) falls back to base64 with an explicit
+`valueEncoding: "base64"` field rather than silently mangling bytes into a lossy string.
+
 **Consumer Groups tab** polls every 5 seconds and lists every real consumer group — `↑`/`↓` to select,
 `Enter` to drill into members and a per-partition lag table, `Escape` to go back, `s` to toggle sorting
 between lag-descending (the default, per spec's own "sort by lag to spot a stuck consumer") and
@@ -189,6 +197,18 @@ look are: the exact broker port (MSK IAM is typically `9098`, not `9092`), IAM p
 `kafka-cluster:Connect` on the cluster/topics, and whether your credential chain (env vars, named
 profile, SSO, instance role) resolves correctly outside this tool first (e.g. `aws sts
 get-caller-identity`).
+
+### Produce tab
+
+A real, navigable, but genuinely inert form (spec §5 tab 4 — producing is an explicit v1 non-goal, per
+spec §1). `↑`/`↓` moves focus between Topic/Key/Value/Partition strategy/Send — deliberately not `Tab`,
+since `Tab` is already the app's global tab-switcher and claiming it here would trap you on this tab.
+`Enter` on a text field opens it for editing (prefilled with its current value; `Escape` reverts
+without committing); on the partition-strategy field it cycles through `Auto (default partitioner)` and
+`Manual: partition 0..3`; on Send it shows the same "not yet implemented" message the tab's header
+already states — a real, focusable, but inert control, not just decoration. This locks in the
+interaction shape (not just the visual layout) for a future pass to wire up an actual producer without
+redesigning the screen.
 
 ### Scripts
 
@@ -268,6 +288,8 @@ src/
 ├── filter/
 │   ├── parseFilter.ts     `@filter:` tokenizer + recursive-descent parser (unit tested)
 │   └── evaluateFilter.ts  existential path resolution + operator dispatch (unit tested)
+├── export/
+│   └── ndjson.ts          toNdjsonRecord/toNdjson (pure) + writeNdjsonExport (thin fs shell, unit tested against the real ~/.kafka-tui/exports)
 └── components/
     ├── StatusBar.tsx      profile, connection state, topic
     ├── TabBar.tsx         tab strip + TabId definitions
@@ -285,7 +307,8 @@ src/
     ├── topics/
     │   ├── TopicsTab.tsx      lists non-internal topics; no polling (structural metadata, not lag)
     │   └── TopicDetail.tsx    partition table + config panel + throughput sparklines; owns its own useKeyboard (mount-scoped), 5s poll for the open topic only
-    └── produce/           Produce placeholder (read-only in v1)
+    └── produce/
+        └── ProduceTab.tsx     navigable but genuinely inert form shell (read-only in v1) — field focus/edit/cycle state machine, disabled Send
 
 docker/
 ├── docker-compose.yml     broker + schema registry + producer

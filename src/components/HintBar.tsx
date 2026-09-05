@@ -29,6 +29,7 @@ const TAB_HINTS: Record<TabId, Hint[]> = {
     { key: "/", label: "search" },
     { key: "@filter:", label: "query" },
     { key: "⏎", label: "inspect" },
+    { key: "x", label: "export ndjson" },
     { key: "r", label: "raw view (in detail)" },
     { key: "y", label: "copy (in detail)" },
   ],
@@ -42,7 +43,12 @@ const TAB_HINTS: Record<TabId, Hint[]> = {
     { key: "⏎", label: "partitions" },
     { key: "c", label: "config" },
   ],
-  produce: [{ key: "—", label: "coming soon" }],
+  produce: [
+    { key: "↑↓", label: "field" },
+    { key: "⏎", label: "edit / cycle" },
+    { key: "esc", label: "cancel edit" },
+    { key: "—", label: "send disabled (v1)" },
+  ],
 }
 
 interface HintBarProps {

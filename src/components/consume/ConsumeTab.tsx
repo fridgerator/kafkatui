@@ -2,6 +2,7 @@ import type { BoxRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { RingBuffer, type RingBufferSlot } from "../../buffer/ringBuffer"
+import { writeNdjsonExport } from "../../export/ndjson"
 import { evaluateFilter } from "../../filter/evaluateFilter"
 import { FilterParseError, parseFilter } from "../../filter/parseFilter"
 import { startConsuming, type ConsumeHandle } from "../../kafka/consume"
@@ -82,6 +83,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   const [connectRequest, setConnectRequest] = useState<{ topic: string; fromBeginning: boolean } | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("disconnected")
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [exportStatus, setExportStatus] = useState<{ text: string; ok: boolean } | null>(null)
 
   const [searchDraft, setSearchDraft] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
@@ -159,6 +161,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     setDroppedCount(0)
     setMsgsPerSecond(0)
     setErrorMessage(null)
+    setExportStatus(null)
     setTick((t) => t + 1)
 
     let sentSinceLastMeasure = 0
@@ -385,8 +388,28 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         setViewportStartSeq(0)
         setSelectedSeq(null)
         setDroppedCount(0)
+        setExportStatus(null)
         setTick((t) => t + 1)
         break
+      case "x": {
+        // Exports whatever's currently matching the active search/filter, or the whole
+        // buffer if none is active — "act on what you're looking at," same philosophy as
+        // MessageDetail's `y` (copy the currently displayed view, not always the raw bytes).
+        const toExport = (matchesRef.current ?? ringBufferRef.current.getRange(ringBufferRef.current.oldestSeq, ringBufferRef.current.newestSeq)).map(
+          (slot) => slot.value,
+        )
+        if (toExport.length === 0) {
+          setExportStatus({ text: "Nothing to export yet.", ok: false })
+          break
+        }
+        try {
+          const path = writeNdjsonExport(activeTopic ?? "messages", toExport)
+          setExportStatus({ text: `Exported ${toExport.length} message${toExport.length === 1 ? "" : "s"} to ${path}`, ok: true })
+        } catch (err) {
+          setExportStatus({ text: `Export failed: ${(err as Error).message}`, ok: false })
+        }
+        break
+      }
       case "up": {
         const buffer = ringBufferRef.current
         const matches = matchesRef.current
@@ -508,6 +531,11 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         {displayError && (
           <text flexShrink={0} truncate wrapMode="none" fg={theme.error}>
             {displayError}
+          </text>
+        )}
+        {exportStatus && (
+          <text flexShrink={0} truncate wrapMode="none" fg={exportStatus.ok ? theme.success : theme.error}>
+            {exportStatus.text}
           </text>
         )}
       </box>
