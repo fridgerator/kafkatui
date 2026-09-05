@@ -9,8 +9,8 @@ The full specification lives in [`docs/kafka-tui-plan.md`](docs/kafka-tui-plan.m
 
 ## Status
 
-**Phase 4 of 10 — Avro decode.** `orders.avro` now decodes into real, readable JSON previews via the
-Confluent Schema Registry, same as `orders.json`.
+**Phase 5 of 10 — search/filter bar.** One input, two modes: case-insensitive substring search, or a
+structured `@filter:` nested-path query language, both live-as-you-type against the buffer.
 
 | Phase | Scope | Status |
 |------:|-------|--------|
@@ -18,7 +18,7 @@ Confluent Schema Registry, same as `orders.json`.
 | 2 | Local Kafka stack (docker-compose + synthetic producer) | ✅ done |
 | 3 | Consume tab: ephemeral consumer, ring buffer, windowed list | ✅ done |
 | 4 | Avro + Confluent Schema Registry | ✅ done |
-| 5 | Search bar + `@filter:` query language | not started |
+| 5 | Search bar + `@filter:` query language | ✅ done |
 | 6 | Message detail view | not started |
 | 7 | Consumer groups tab: lag, sparklines | not started |
 | 8 | Topics tab: metadata + config | not started |
@@ -75,6 +75,34 @@ same JSON-preview format as plain JSON topics, as long as the profile has `schem
 (spec §3). Without one configured, or if the registry is unreachable, it falls back to a hex/binary
 preview with a clear reason rather than crashing — a small circuit breaker stops hammering a dead
 registry with an HTTP call per message after 5 consecutive failures, retrying again after 30s.
+
+**Search / filter** — `/` opens the search box, prefilled with whatever's currently applied (refining
+an existing search is the common case, unlike the topic field which always starts blank). It updates
+live as you type; `Enter` commits, `Escape` reverts to whatever was last committed rather than
+discarding a working query. Submitting an empty query clears filtering.
+
+Plain text does a case-insensitive substring match against each message's full decoded body (not the
+truncated list-row preview — a match past the 200-char display cutoff still counts). Text starting
+with `@filter:` switches to a structured nested-path query:
+
+```
+@filter: items[].sku = "WIDGET-001"
+@filter: customer.roles[] contains "admin"
+@filter: metadata.retryCount > 3
+```
+
+`a.b.c` is a plain nested path; `a.b[].c` existentially matches if *any* element of array `a.b` has
+that shape (works for arrays of objects and, by omitting the trailing key, arrays of scalars).
+Operators: `=`, `!=`, `contains` (substring for a string candidate, membership for an array
+candidate), `>`, `<`, `>=`, `<=`, and `~=` for a regex match. Values are double-quoted strings, bare
+numbers, `true`/`false`, or `null`. **`AND`/`OR` chaining isn't supported yet** — one predicate per
+query, per the spec's own allowance to defer it; a malformed or incomplete expression shows a clear
+parse error and falls back to the unfiltered view rather than freezing on a stale one. `@filter:` only
+ever matches JSON-decoded messages (including Avro, once decoded) — it's a no-op against plain text.
+
+Enabling either search mode means the whole retained buffer gets decoded and scanned on every new
+message (not just what's on screen) — the match count and "searching last N buffered" note in the
+status line make that scope visible, matching spec §6.3's guidance for the ring buffer's own limits.
 
 ### Scripts
 
@@ -136,7 +164,7 @@ src/
 │   ├── types.ts           ClusterProfile / AuthConfig / KafkaTuiConfig (spec §3)
 │   └── loadConfig.ts      --config/--profile flags, YAML parse, ${ENV_VAR} interpolation
 ├── kafka/
-│   ├── types.ts           RawMessage, BufferedMessage, ConnectionState
+│   ├── types.ts           RawMessage, BufferedMessage, ConnectionState, getOrDecode(), getSearchableText()
 │   ├── client.ts          createKafkaClient(profile) — "none" auth implemented, others stubbed
 │   ├── KafkaClientContext.tsx       shared Kafka client instance for all tabs
 │   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
@@ -147,14 +175,18 @@ src/
 │       └── hexDump.ts
 ├── buffer/
 │   └── ringBuffer.ts      seq-anchored circular buffer (unit tested)
+├── filter/
+│   ├── parseFilter.ts     `@filter:` tokenizer + recursive-descent parser (unit tested)
+│   └── evaluateFilter.ts  existential path resolution + operator dispatch (unit tested)
 └── components/
     ├── StatusBar.tsx      profile, connection state, topic
     ├── TabBar.tsx         tab strip + TabId definitions
     ├── HintBar.tsx        context-sensitive keybinding hints
+    ├── SearchBox.tsx      the search/filter input (mode + draft/commit state live in ConsumeTab)
     ├── consume/
-    │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state
+    │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state, live filtering
     │   ├── TopicBar.tsx       topic-name input + latest/earliest toggle
-    │   └── MessageList.tsx    pure presentational, renders exactly rowCount rows
+    │   └── MessageList.tsx    pure presentational, renders exactly rowCount rows, substring highlighting
     ├── groups/            Consumer Groups tab (placeholder — phase 7)
     ├── topics/            Topics / cluster metadata tab (placeholder — phase 8)
     └── produce/           Produce placeholder (read-only in v1)
@@ -193,3 +225,12 @@ so upgrades should be deliberate rather than picked up by a range.
   placeholder set first, and the real result (plus a `tick` bump to
   re-render) applied when the promise resolves. `decodeMessage()` itself
   stays fully synchronous and pure.
+- **Search/filter state must never appear in the consumer-connect effect's
+  dependency array.** Typing a query re-renders `ConsumeTab`, but it must not
+  disconnect and reconnect the consumer — the flush loop reads the current
+  matcher through a ref (`matcherRef`, mirrored from state via its own
+  effect), the same pattern already used for `followingRef`/`rowCountRef`.
+- **Full-body search reads raw bytes or the decoded value, never
+  `decoded.preview`.** The preview is truncated to 200 chars for the list
+  row; searching against it would silently miss real matches past that
+  point. See `getSearchableText()` in `kafka/types.ts`.

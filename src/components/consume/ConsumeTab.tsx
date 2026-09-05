@@ -1,18 +1,23 @@
 import type { BoxRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { RingBuffer } from "../../buffer/ringBuffer"
+import { RingBuffer, type RingBufferSlot } from "../../buffer/ringBuffer"
+import { evaluateFilter } from "../../filter/evaluateFilter"
+import { FilterParseError, parseFilter } from "../../filter/parseFilter"
 import { startConsuming, type ConsumeHandle } from "../../kafka/consume"
 import { decodeAvroMessage } from "../../kafka/decode/avro"
 import { looksLikeConfluentAvro } from "../../kafka/decode/decodeMessage"
 import { useKafkaClient } from "../../kafka/KafkaClientContext"
 import { useSchemaRegistry } from "../../kafka/SchemaRegistryContext"
-import type { BufferedMessage, ConnectionState, RawMessage } from "../../kafka/types"
+import { getOrDecode, getSearchableText, type BufferedMessage, type ConnectionState, type RawMessage } from "../../kafka/types"
+import { SearchBox } from "../SearchBox"
 import { theme } from "../../theme/monokai"
 import { MessageList } from "./MessageList"
 import { TopicBar } from "./TopicBar"
 
-type Mode = "browse" | "editingTopic"
+type Mode = "browse" | "editingTopic" | "editingSearch"
+
+const FILTER_PREFIX = "@filter:"
 
 /** ~16Hz — within spec §6.3's "max 10-20 UI updates/sec" band. */
 const FLUSH_INTERVAL_MS = 62
@@ -28,6 +33,35 @@ interface ConsumeTabProps {
   ringBufferSize: number
   onStatusChange: (status: ConsumeStatus) => void
   onInputActiveChange: (active: boolean) => void
+}
+
+type Matcher = (slot: RingBufferSlot<BufferedMessage>) => boolean
+
+/** Compiles the active query text into a matcher. `null` matcher means "no filter, show everything." */
+function compileQuery(query: string): { matcher: Matcher | null; error: string | null; isFilterMode: boolean } {
+  const trimmed = query.trim()
+  if (!trimmed) return { matcher: null, error: null, isFilterMode: false }
+
+  if (trimmed.startsWith(FILTER_PREFIX)) {
+    const expr = trimmed.slice(FILTER_PREFIX.length)
+    try {
+      const parsed = parseFilter(expr)
+      const matcher: Matcher = (slot) => {
+        const decoded = getOrDecode(slot.value)
+        return decoded.kind === "json" && decoded.value !== undefined && evaluateFilter(parsed, decoded.value)
+      }
+      return { matcher, error: null, isFilterMode: true }
+    } catch (err) {
+      const message = err instanceof FilterParseError ? err.message : String(err)
+      // A parse failure shows the whole unfiltered buffer plus the error, rather than
+      // freezing on a stale filtered view — the common case is a query still being typed.
+      return { matcher: null, error: message, isFilterMode: true }
+    }
+  }
+
+  const needle = trimmed.toLowerCase()
+  const matcher: Matcher = (slot) => getSearchableText(slot.value).toLowerCase().includes(needle)
+  return { matcher, error: null, isFilterMode: false }
 }
 
 export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange }: ConsumeTabProps) {
@@ -48,13 +82,21 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   const [connection, setConnection] = useState<ConnectionState>("disconnected")
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
+  const [searchDraft, setSearchDraft] = useState("")
+  const [searchQuery, setSearchQuery] = useState("")
+
   const [rowCount, setRowCount] = useState(1)
   const [viewportStartSeq, setViewportStartSeq] = useState(0)
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null)
   const [following, setFollowing] = useState(true)
   const [droppedCount, setDroppedCount] = useState(0)
   const [msgsPerSecond, setMsgsPerSecond] = useState(0)
-  const [tick, setTick] = useState(0) // bumped once per flush to invalidate the visible-rows memo
+  const [tick, setTick] = useState(0) // bumped whenever the buffer or the compiled matcher changed
+
+  // The query actually in effect: the live draft while editing search, else the committed one
+  // (spec §6.4 — filtering re-runs live "when first typed", not only on submit).
+  const activeQueryText = mode === "editingSearch" ? searchDraft : searchQuery
+  const { matcher, error: queryError, isFilterMode } = useMemo(() => compileQuery(activeQueryText), [activeQueryText])
 
   const followingRef = useRef(following)
   useEffect(() => {
@@ -64,18 +106,25 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   useEffect(() => {
     rowCountRef.current = rowCount
   }, [rowCount])
+  const matcherRef = useRef<Matcher | null>(matcher)
+  useEffect(() => {
+    matcherRef.current = matcher
+  }, [matcher])
+  /** Set inside the flush loop each tick it ran; read directly during render, same convention as `ringBufferRef`. */
+  const matchesRef = useRef<RingBufferSlot<BufferedMessage>[] | null>(null)
+  const lastMatcherRef = useRef<Matcher | null | undefined>(undefined)
 
   useEffect(() => {
     onStatusChange({ connection, topic: activeTopic })
   }, [connection, activeTopic, onStatusChange])
 
   useEffect(() => {
-    onInputActiveChange(mode === "editingTopic")
+    onInputActiveChange(mode !== "browse")
   }, [mode, onInputActiveChange])
 
   // Measure available rows via the renderer's own size-change event rather than
   // hardcoding chrome-height arithmetic — robust to any future change in the
-  // surrounding StatusBar/TabBar/HintBar/TopicBar heights.
+  // surrounding StatusBar/TabBar/HintBar/TopicBar/SearchBox heights.
   useEffect(() => {
     const box = listBoxRef.current
     if (!box) return
@@ -89,12 +138,16 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
 
   // Consumer lifecycle: (re)connect whenever a new connect request arrives — a fresh
   // object each submit (see handleSubmitTopic) so even reconnecting to the same topic
-  // with a different start-position setting reruns this effect.
+  // with a different start-position setting reruns this effect. Search/filter state
+  // intentionally does NOT appear in this effect's dependencies — typing a query must
+  // never disconnect and reconnect the consumer.
   useEffect(() => {
     if (!connectRequest) return
 
     ringBufferRef.current = new RingBuffer<BufferedMessage>(ringBufferSize)
     pendingRef.current = []
+    matchesRef.current = null
+    lastMatcherRef.current = undefined
     setViewportStartSeq(0)
     setSelectedSeq(null)
     setFollowing(true)
@@ -107,9 +160,13 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     let lastMeasureAt = Date.now()
 
     const flushInterval = setInterval(() => {
+      const buffer = ringBufferRef.current
       const pending = pendingRef.current
-      if (pending.length > 0) {
-        const buffer = ringBufferRef.current
+      const hasNewMessages = pending.length > 0
+      const currentMatcher = matcherRef.current
+      const matcherChanged = currentMatcher !== lastMatcherRef.current
+
+      if (hasNewMessages) {
         for (const raw of pending) {
           const slot = buffer.push(raw)
           // Avro decode needs an HTTP round-trip on a cache miss, so it can't happen
@@ -128,13 +185,35 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         }
         pendingRef.current = []
         sentSinceLastMeasure += pending.length
+      }
+
+      if (hasNewMessages || matcherChanged) {
+        lastMatcherRef.current = currentMatcher
+        const allMatches = currentMatcher ? buffer.getRange(buffer.oldestSeq, buffer.newestSeq).filter(currentMatcher) : null
+        matchesRef.current = allMatches
 
         if (followingRef.current) {
           const rc = rowCountRef.current
-          setViewportStartSeq(Math.max(buffer.oldestSeq, buffer.newestSeq - rc + 1))
-          setSelectedSeq(buffer.newestSeq)
+          if (allMatches) {
+            const tailStart = Math.max(0, allMatches.length - rc)
+            const tailStartSlot = allMatches[tailStart]
+            const lastMatch = allMatches[allMatches.length - 1]
+            setViewportStartSeq(tailStartSlot ? tailStartSlot.seq : buffer.oldestSeq)
+            setSelectedSeq(lastMatch ? lastMatch.seq : null)
+          } else {
+            setViewportStartSeq(Math.max(buffer.oldestSeq, buffer.newestSeq - rc + 1))
+            setSelectedSeq(buffer.newestSeq >= 0 ? buffer.newestSeq : null)
+          }
+        } else if (allMatches) {
+          // Self-heal: if the selection no longer matches (filter changed) or was
+          // evicted, fall back to the newest remaining match (decision 6).
+          setSelectedSeq((s) => {
+            if (s !== null && allMatches.some((m) => m.seq === s)) return s
+            const last = allMatches[allMatches.length - 1]
+            return last ? last.seq : null
+          })
+          setViewportStartSeq((v) => Math.max(v, buffer.oldestSeq))
         } else {
-          // Self-heal: a paused viewport can never point below the retained window (decision 4).
           setViewportStartSeq((v) => Math.max(v, buffer.oldestSeq))
           setSelectedSeq((s) => (s !== null && s < buffer.oldestSeq ? buffer.oldestSeq : s))
         }
@@ -201,8 +280,27 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     [fromBeginning],
   )
 
+  const handleSubmitSearch = useCallback((value: string) => {
+    setSearchQuery(value)
+    setMode("browse")
+  }, [])
+
   const snapToFollow = useCallback(() => {
     const buffer = ringBufferRef.current
+    const matches = matchesRef.current
+    if (matches) {
+      if (matches.length === 0) {
+        setSelectedSeq(null)
+        return
+      }
+      const rc = rowCountRef.current
+      const tailStart = Math.max(0, matches.length - rc)
+      const startSlot = matches[tailStart]
+      const lastSlot = matches[matches.length - 1]
+      setViewportStartSeq(startSlot ? startSlot.seq : buffer.oldestSeq)
+      setSelectedSeq(lastSlot ? lastSlot.seq : null)
+      return
+    }
     if (buffer.size === 0) {
       setSelectedSeq(null)
       return
@@ -220,6 +318,15 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       return
     }
 
+    if (mode === "editingSearch") {
+      if (key.name === "escape") {
+        // Reverts to the last committed query — the draft never got written to
+        // `searchQuery`, so simply leaving edit mode is enough (decision 4).
+        setMode("browse")
+      }
+      return
+    }
+
     switch (key.name) {
       case "t":
         // Starts blank rather than prefilled with the active topic — the common case
@@ -227,6 +334,12 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         // current one, and prefilling would force clearing it first every time.
         setTopicDraft("")
         setMode("editingTopic")
+        break
+      case "/":
+        // Prefilled with the current query, unlike the topic field — refining an
+        // existing search is the common case here (decision 5).
+        setSearchDraft(searchQuery)
+        setMode("editingSearch")
         break
       case "e":
         setFromBeginning((v) => !v)
@@ -240,6 +353,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         break
       case "c":
         ringBufferRef.current.clear()
+        matchesRef.current = matcherRef.current ? [] : null
         setViewportStartSeq(0)
         setSelectedSeq(null)
         setDroppedCount(0)
@@ -247,36 +361,69 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         break
       case "up": {
         const buffer = ringBufferRef.current
-        if (buffer.size === 0) break
-        setFollowing(false)
-        setSelectedSeq((s) => {
-          const next = s === null ? buffer.newestSeq : Math.max(buffer.oldestSeq, s - 1)
-          setViewportStartSeq((v) => Math.min(v, next))
-          return next
-        })
+        const matches = matchesRef.current
+        if (matches) {
+          if (matches.length === 0) break
+          setFollowing(false)
+          setSelectedSeq((s) => {
+            const idx = s === null ? matches.length - 1 : matches.findIndex((m) => m.seq === s)
+            const prevSlot = matches[idx <= 0 ? 0 : idx - 1]
+            if (!prevSlot) return s
+            setViewportStartSeq((v) => Math.min(v, prevSlot.seq))
+            return prevSlot.seq
+          })
+        } else {
+          if (buffer.size === 0) break
+          setFollowing(false)
+          setSelectedSeq((s) => {
+            const next = s === null ? buffer.newestSeq : Math.max(buffer.oldestSeq, s - 1)
+            setViewportStartSeq((v) => Math.min(v, next))
+            return next
+          })
+        }
         break
       }
       case "down": {
         const buffer = ringBufferRef.current
-        if (buffer.size === 0) break
-        setSelectedSeq((s) => {
-          const next = s === null ? buffer.newestSeq : Math.min(buffer.newestSeq, s + 1)
-          if (next >= buffer.newestSeq) setFollowing(true)
-          setViewportStartSeq((v) => Math.max(v, next - rowCountRef.current + 1))
-          return next
-        })
+        const matches = matchesRef.current
+        if (matches) {
+          if (matches.length === 0) break
+          setSelectedSeq((s) => {
+            const idx = s === null ? -1 : matches.findIndex((m) => m.seq === s)
+            const nextIdx = idx === -1 ? 0 : Math.min(matches.length - 1, idx + 1)
+            const nextSlot = matches[nextIdx]
+            if (!nextSlot) return s
+            if (nextIdx >= matches.length - 1) setFollowing(true)
+            setViewportStartSeq((v) => Math.max(v, nextSlot.seq - rowCountRef.current + 1))
+            return nextSlot.seq
+          })
+        } else {
+          if (buffer.size === 0) break
+          setSelectedSeq((s) => {
+            const next = s === null ? buffer.newestSeq : Math.min(buffer.newestSeq, s + 1)
+            if (next >= buffer.newestSeq) setFollowing(true)
+            setViewportStartSeq((v) => Math.max(v, next - rowCountRef.current + 1))
+            return next
+          })
+        }
         break
       }
     }
   })
 
   const buffer = ringBufferRef.current
-  const visibleRows = useMemo(
-    () => buffer.getRange(viewportStartSeq, viewportStartSeq + rowCount - 1),
-    // `tick` (not `buffer`) is the intentional invalidation signal — `buffer` is a mutable
-    // ref target that changes in place; `tick` is bumped exactly when its contents changed.
-    [tick, viewportStartSeq, rowCount],
-  )
+  const matches = matchesRef.current
+  const visibleRows = useMemo(() => {
+    if (matches === null) {
+      return buffer.getRange(viewportStartSeq, viewportStartSeq + rowCount - 1)
+    }
+    const startIndex = matches.findIndex((m) => m.seq >= viewportStartSeq)
+    const from = startIndex === -1 ? matches.length : startIndex
+    return matches.slice(from, from + rowCount)
+    // `tick` (not `buffer`/`matches` object identity alone) is the intentional invalidation
+    // signal — both are mutable refs that change in place; `tick` is bumped exactly when
+    // their contents changed.
+  }, [tick, viewportStartSeq, rowCount, matches])
 
   const emptyMessage = !activeTopic
     ? "Press t to pick a topic."
@@ -284,33 +431,54 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       ? "Connecting…"
       : connection === "failed"
         ? `Connection failed${errorMessage ? `: ${errorMessage}` : ""}`
-        : "Waiting for messages…"
+        : matches !== null && matches.length === 0
+          ? "No messages match."
+          : "Waiting for messages…"
+
+  const displayError = errorMessage ?? queryError
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden" }}>
       <TopicBar
-        mode={mode}
+        mode={mode === "editingTopic" ? "editingTopic" : "browse"}
         topicDraft={topicDraft}
         onTopicDraftChange={setTopicDraft}
         onSubmit={handleSubmitTopic}
         activeTopic={activeTopic}
         fromBeginning={fromBeginning}
       />
+      <SearchBox
+        editing={mode === "editingSearch"}
+        draft={searchDraft}
+        onDraftChange={setSearchDraft}
+        onSubmit={handleSubmitSearch}
+        committedQuery={searchQuery}
+      />
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 2, paddingLeft: 1, overflow: "hidden" }}>
         <text flexShrink={0} fg={theme.fgDim}>{`${buffer.size}/${buffer.getCapacity()} buffered`}</text>
+        {matches !== null && (
+          <text flexShrink={0} fg={theme.info}>{`${matches.length} match${matches.length === 1 ? "" : "es"} (searching last ${buffer.getCapacity()} buffered)`}</text>
+        )}
         <text flexShrink={0} fg={theme.fgDim}>{`${msgsPerSecond.toFixed(1)} msgs/sec`}</text>
         {droppedCount > 0 && <text flexShrink={0} fg={theme.warning}>{`${droppedCount} dropped`}</text>}
         <text flexShrink={0} fg={following ? theme.success : theme.warning}>
           {following ? "following" : "paused (space to resume)"}
         </text>
-        {errorMessage && (
+        {displayError && (
           <text flexShrink={0} truncate wrapMode="none" fg={theme.error}>
-            {errorMessage}
+            {displayError}
           </text>
         )}
       </box>
       <box ref={listBoxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
-        <MessageList rows={visibleRows} rowCount={rowCount} selectedSeq={selectedSeq} emptyMessage={emptyMessage} />
+        <MessageList
+          rows={visibleRows}
+          rowCount={rowCount}
+          selectedSeq={selectedSeq}
+          emptyMessage={emptyMessage}
+          highlightQuery={matches !== null && !isFilterMode ? activeQueryText.trim() : undefined}
+          filterActive={matches !== null && isFilterMode}
+        />
       </box>
     </box>
   )
