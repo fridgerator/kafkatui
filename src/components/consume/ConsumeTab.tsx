@@ -69,6 +69,26 @@ function compileQuery(query: string): { matcher: Matcher | null; error: string |
   return { matcher, error: null, isFilterMode: false }
 }
 
+/**
+ * Pure. The raw upper seq bound for the visible window is normally `viewportStartSeq + rowCount
+ * - 1`, computed fresh every render — while following the live tail this is exactly what's
+ * wanted (it naturally rises as `newestSeq` does). But it's *also* what's used while paused, and
+ * a fixed row-count-sized window will happily backfill with messages that arrive after pausing
+ * if the screen wasn't already full at that moment (e.g. you just connected, watched a handful
+ * of messages, then paused before a full screen accumulated) — from the user's perspective the
+ * list keeps growing/appending despite "paused" being shown, which is the actual bug this fixes.
+ * `pausedAtSeq` is the buffer's `newestSeq` captured at the exact moment pausing began (`null`
+ * while following, meaning "no cap") — once set, the window can never extend past it, so a
+ * screen that wasn't full when you paused just stays partially full instead of quietly catching
+ * up. Eviction (the buffer's `oldestSeq` outrunning `viewportStartSeq` on a busy topic with a
+ * small buffer) is the one case still allowed to move the window while paused — that's not
+ * fixable without unbounded memory, since the data has genuinely been evicted.
+ */
+export function cappedEndSeq(viewportStartSeq: number, rowCount: number, pausedAtSeq: number | null): number {
+  const rawEnd = viewportStartSeq + rowCount - 1
+  return pausedAtSeq === null ? rawEnd : Math.min(rawEnd, pausedAtSeq)
+}
+
 export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange }: ConsumeTabProps) {
   const kafka = useKafkaClient()
   const { client: schemaRegistryClient, config: schemaRegistryConfig } = useSchemaRegistry()
@@ -125,6 +145,9 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   /** Set inside the flush loop each tick it ran; read directly during render, same convention as `ringBufferRef`. */
   const matchesRef = useRef<RingBufferSlot<BufferedMessage>[] | null>(null)
   const lastMatcherRef = useRef<Matcher | null | undefined>(undefined)
+  /** `null` while following; set to the buffer's `newestSeq` at the exact moment pausing began.
+   *  See `cappedEndSeq()`'s doc comment for why this exists. */
+  const pausedAtSeqRef = useRef<number | null>(null)
 
   useEffect(() => {
     onStatusChange({ connection, topic: activeTopic })
@@ -164,6 +187,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     pendingRef.current = []
     matchesRef.current = null
     lastMatcherRef.current = undefined
+    pausedAtSeqRef.current = null
     setViewportStartSeq(0)
     setSelectedSeq(null)
     setFollowing(true)
@@ -307,6 +331,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   }, [])
 
   const snapToFollow = useCallback(() => {
+    pausedAtSeqRef.current = null
     const buffer = ringBufferRef.current
     const matches = matchesRef.current
     if (matches) {
@@ -382,13 +407,21 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       case "space":
         setFollowing((was) => {
           const now = !was
-          if (now) snapToFollow()
+          if (now) {
+            snapToFollow()
+          } else {
+            pausedAtSeqRef.current = ringBufferRef.current.newestSeq
+          }
           return now
         })
         break
       case "c":
         ringBufferRef.current.clear()
         matchesRef.current = matcherRef.current ? [] : null
+        // A stale freeze point from before the clear would otherwise point past the end of the
+        // now-empty buffer, which — since a stale cap that's too high behaves as no cap at all —
+        // would let a paused view silently backfill again with whatever arrives post-clear.
+        if (!following) pausedAtSeqRef.current = ringBufferRef.current.newestSeq
         setViewportStartSeq(0)
         setSelectedSeq(null)
         setDroppedCount(0)
@@ -417,8 +450,14 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       case "up": {
         const buffer = ringBufferRef.current
         const matches = matchesRef.current
+        // Only freeze on the *transition* into paused — repeated "up" presses while already
+        // paused must not keep re-arming the cap to a later seq, or it'd defeat the freeze.
+        const freezeIfNeeded = () => {
+          if (following) pausedAtSeqRef.current = buffer.newestSeq
+        }
         if (matches) {
           if (matches.length === 0) break
+          freezeIfNeeded()
           setFollowing(false)
           setSelectedSeq((s) => {
             const idx = s === null ? matches.length - 1 : matches.findIndex((m) => m.seq === s)
@@ -429,6 +468,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           })
         } else {
           if (buffer.size === 0) break
+          freezeIfNeeded()
           setFollowing(false)
           setSelectedSeq((s) => {
             const next = s === null ? buffer.newestSeq : Math.max(buffer.oldestSeq, s - 1)
@@ -448,7 +488,10 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
             const nextIdx = idx === -1 ? 0 : Math.min(matches.length - 1, idx + 1)
             const nextSlot = matches[nextIdx]
             if (!nextSlot) return s
-            if (nextIdx >= matches.length - 1) setFollowing(true)
+            if (nextIdx >= matches.length - 1) {
+              pausedAtSeqRef.current = null
+              setFollowing(true)
+            }
             setViewportStartSeq((v) => Math.max(v, nextSlot.seq - rowCountRef.current + 1))
             return nextSlot.seq
           })
@@ -456,7 +499,10 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           if (buffer.size === 0) break
           setSelectedSeq((s) => {
             const next = s === null ? buffer.newestSeq : Math.min(buffer.newestSeq, s + 1)
-            if (next >= buffer.newestSeq) setFollowing(true)
+            if (next >= buffer.newestSeq) {
+              pausedAtSeqRef.current = null
+              setFollowing(true)
+            }
             setViewportStartSeq((v) => Math.max(v, next - rowCountRef.current + 1))
             return next
           })
@@ -469,12 +515,21 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   const buffer = ringBufferRef.current
   const matches = matchesRef.current
   const visibleRows = useMemo(() => {
+    const pausedAtSeq = pausedAtSeqRef.current
+    const end = cappedEndSeq(viewportStartSeq, rowCount, pausedAtSeq)
     if (matches === null) {
-      return buffer.getRange(viewportStartSeq, viewportStartSeq + rowCount - 1)
+      return buffer.getRange(viewportStartSeq, end)
     }
     const startIndex = matches.findIndex((m) => m.seq >= viewportStartSeq)
     const from = startIndex === -1 ? matches.length : startIndex
-    return matches.slice(from, from + rowCount)
+    if (pausedAtSeq === null) return matches.slice(from, from + rowCount)
+    // Same cap, expressed as a count rather than a raw seq span: `matches` is sparse, so "up to
+    // rowCount entries" and "nothing past `end`" are two independent limits, both needed. Only
+    // worth searching for at all while actually paused — otherwise this would linearly rescan
+    // the whole (possibly buffer-capacity-sized) matches array every tick for no reason.
+    const overCapIndex = matches.findIndex((m) => m.seq > end)
+    const availableEnd = overCapIndex === -1 ? matches.length : overCapIndex
+    return matches.slice(from, Math.min(from + rowCount, availableEnd))
     // `tick` (not `buffer`/`matches` object identity alone) is the intentional invalidation
     // signal — both are mutable refs that change in place; `tick` is bumped exactly when
     // their contents changed.

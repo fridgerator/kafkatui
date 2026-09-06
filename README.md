@@ -68,6 +68,21 @@ down so you can type freely — see [Conventions](#conventions).
 | `c` | Clear the buffer without disconnecting |
 | `x` | Export the current (filtered or full) buffer to NDJSON — see below |
 
+Pausing freezes the visible window at exactly the messages on screen the moment you paused — new
+arrivals keep landing in the buffer (the buffered count and msgs/sec keep climbing, honestly
+reflecting that), but the list itself won't grow or shift on its own. This needs an explicit freeze
+point (`ConsumeTab.tsx`'s `cappedEndSeq()`, unit tested), not just "stop auto-scrolling": a naive
+"pin the top, render `rowCount` rows from there" approach still backfills with newly-arrived messages
+whenever the screen wasn't already full of them at the moment you paused (e.g. you just connected,
+watched a handful of messages go by, then paused) — the window has room, so it quietly fills in with
+"future" data despite showing "paused." Verified against the real local broker: pausing seconds after
+connecting, well before a screen's worth of messages had arrived, correctly leaves the rest of the
+screen blank rather than catching up as more arrive. The one thing pausing can't prevent is the
+buffer's own fixed-capacity eviction — on a busy topic with a small `ringBufferSize`, sitting paused
+long enough for the buffer to wrap can still force the window forward, because that data has
+genuinely been evicted from memory; there's no fixing that without unbounded memory, only a bigger
+buffer.
+
 Switching to another tab disconnects the ephemeral consumer; returning to Consume starts fresh —
 reconnecting is always an explicit `t` → Connect, never automatic. What *does* persist across tabs is
 the **configuration** itself (below), not the live stream: this is a deliberate scope decision, not an
