@@ -11,7 +11,7 @@ import { GroupDetail } from "./GroupDetail"
  * few samples are checked (not the full sparkline history) so a genuinely stuck group is
  * flagged within ~15s, not after the full 30-sample/2.5-minute window fills up. */
 const STUCK_WINDOW = 3
-const POLL_INTERVAL_MS = 5000
+const POLL_INTERVAL_MS = 30_000
 
 export function isGroupStuck(history: number[]): boolean {
   if (history.length < STUCK_WINDOW) return false
