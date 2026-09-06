@@ -143,23 +143,43 @@ Avro message whose registry lookup was still pending) falls back to base64 with 
 **Consumer Groups tab** polls every 5 seconds and lists every real consumer group — `↑`/`↓` to select,
 `Enter` to drill into members and a per-partition lag table, `Escape` to go back, `s` to toggle sorting
 between lag-descending (the default, per spec's own "sort by lag to spot a stuck consumer") and
-alphabetical. This tool's own Consume tab creates a throwaway `kafka-tui-<random>-<pid>` group every
-time it connects (never committing offsets); those are filtered out of this list entirely rather than
+alphabetical, `/` to filter the list by a group ID substring (handy once a cluster has hundreds of
+groups — the list itself scrolls, keeping the selected row in view, once there are more than fit on
+screen). This tool's own Consume tab creates a throwaway `kafka-tui-<random>-<pid>` group every time it
+connects (never committing offsets); those are filtered out of this list entirely rather than
 cluttering it with the tool's own noise.
 
 A group gets a `⚠ stuck` badge when its total lag has been nonzero and non-decreasing for the last 3
 poll ticks (~15s) — deliberately a shorter window than the ~30-sample/2.5-minute history the sparklines
 themselves show, so a genuinely stuck consumer gets flagged quickly rather than waiting for the full
-trend window to fill. Switching away from the Groups tab stops polling and disconnects its admin
-client entirely, the same as Consume tab's connection (see [Conventions](#conventions)) — coming back
-starts fresh.
+trend window to fill.
+
+The polled snapshots, selection, sort order, and search query all live in `GroupsDataContext`, mounted
+once at the `App` level rather than owned by the tab component — switching tabs away and back no longer
+disconnects and restarts anything. Polling begins the first time you open the Groups tab and, once
+started, **keeps running in the background for the rest of the session**, even while another tab is
+active — the previous behavior ("switching away stops polling and disconnects its admin client
+entirely... coming back starts fresh") is gone. This is a deliberate trade specific to this tab: lag/
+trend monitoring is inherently a live concern, so the sparkline history stays gap-free and returning to
+the tab shows an instantly up-to-date view instead of a reconnect delay. The cost (one open admin
+connection + a 5s poll loop for the rest of the process's life) only applies once you've actually opened
+the tab at least once — it isn't paid at startup.
 
 **Topics tab** lists every non-internal topic (name, partition count, replication factor) — `↑`/`↓` to
 select, `Enter` to drill into a per-partition table (leader, ISR, replicas, earliest/latest offset,
-message count, a live throughput sparkline) plus the full config panel, `Escape` to go back. Unlike
-Groups, the list itself doesn't poll — partition count and replication factor are structural and don't
-change mid-session, so switching tabs away and back is the implicit refresh; only the open detail's
-topic polls, every 5 seconds, for offsets and throughput.
+message count, a live throughput sparkline) plus the full config panel, `Escape` to go back, `/` to
+filter by a topic-name substring, `r` to force a re-fetch. The list itself doesn't poll — partition
+count and replication factor are structural and don't change mid-session — so it's fetched once, the
+first time you open the tab, and cached in `TopicsDataContext` (same App-level-provider pattern as
+Groups) for the rest of the session; switching tabs away and back no longer re-fetches it (previously
+documented as "switching tabs away and back is the implicit refresh" — `r` is what replaces that now).
+Only the open detail's topic keeps polling, every 5 seconds, for offsets and throughput, same as before.
+
+Both lists render only as many rows as fit the terminal and keep the selected row scrolled into view as
+you move `↑`/`↓` — a small shared hook (`useListViewport`, `src/components/useListViewport.ts`) handles
+the windowing math for both, index-based rather than OpenTUI's `<scrollbox>` (which free-scrolls
+independently of any selection — the wrong fit here, same reasoning `ConsumeTab`'s message list already
+followed for the same problem).
 
 Internal topics (`__consumer_offsets`, `__transaction_state`, Confluent Schema Registry's `_schemas`)
 are filtered out of the list — a named exclusion (`startsWith("__")` or exactly `_schemas`), not a
@@ -302,6 +322,8 @@ src/
 │   ├── consume.ts         ephemeral no-commit consumer wrapper
 │   ├── groups.ts          describeGroups/fetchOffsets orchestration + pure lag math (unit tested against the real broker)
 │   ├── topics.ts          listTopics/fetchTopicMetadata/describeConfigs orchestration + isInternalTopic/isUnderReplicated (unit tested against the real broker)
+│   ├── GroupsDataContext.tsx   App-level-persistent poll loop + snapshots/selection/search/sort (survives GroupsTab unmounting on tab switch)
+│   ├── TopicsDataContext.tsx   App-level-persistent one-shot fetch + overviews/selection/search (survives TopicsTab unmounting on tab switch)
 │   ├── auth/
 │   │   └── mskIam.ts      SASL/OAUTHBEARER token provider for MSK IAM auth — caching/early refresh, injectable token source (unit tested with a fake source; not yet tested against real MSK)
 │   └── decode/
@@ -319,18 +341,19 @@ src/
     ├── StatusBar.tsx      profile, connection state, topic
     ├── TabBar.tsx         tab strip + TabId definitions
     ├── HintBar.tsx        context-sensitive keybinding hints
-    ├── SearchBox.tsx      the search/filter input (mode + draft/commit state live in ConsumeTab)
+    ├── SearchBox.tsx      the search/filter input (mode + draft/commit state live in the caller; optional `placeholder`)
     ├── Sparkline.tsx      sparklineChars() (pure, unit tested) + a thin <Sparkline> wrapper
+    ├── useListViewport.ts index-based windowed-list scrolling shared by Topics/Groups (pure computeViewportStart, unit tested)
     ├── consume/
     │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state, live filtering
     │   ├── TopicBar.tsx       topic-name input + latest/earliest toggle
     │   ├── MessageList.tsx    pure presentational, renders exactly rowCount rows, substring highlighting
     │   └── MessageDetail.tsx  full pretty-print/hex/base64 view; owns its own useKeyboard (mount-scoped)
     ├── groups/
-    │   ├── GroupsTab.tsx      owns the 5s poll, per-group/per-partition lag history, sort/select
+    │   ├── GroupsTab.tsx      view over GroupsDataContext — search/scroll/select, own useKeyboard
     │   └── GroupDetail.tsx    members + per-partition lag table; owns its own useKeyboard (mount-scoped)
     ├── topics/
-    │   ├── TopicsTab.tsx      lists non-internal topics; no polling (structural metadata, not lag)
+    │   ├── TopicsTab.tsx      view over TopicsDataContext — search/scroll/select/refresh, own useKeyboard
     │   └── TopicDetail.tsx    partition table + config panel + throughput sparklines; owns its own useKeyboard (mount-scoped), 5s poll for the open topic only
     └── produce/
         └── ProduceTab.tsx     navigable but genuinely inert form shell (read-only in v1) — field focus/edit/cycle state machine, disabled Send

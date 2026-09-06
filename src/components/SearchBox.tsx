@@ -6,6 +6,8 @@ interface SearchBoxProps {
   onDraftChange: (value: string) => void
   onSubmit: (value: string) => void
   committedQuery: string
+  /** Defaults to Consume's `@filter:` hint — Topics/Groups pass a plain-substring-only hint instead. */
+  placeholder?: string
 }
 
 /**
@@ -20,7 +22,14 @@ interface SearchBoxProps {
  * because spec §10's own project structure names it there, as a
  * potentially-shared widget rather than something Consume-tab-specific.
  */
-export function SearchBox({ editing, draft, onDraftChange, onSubmit, committedQuery }: SearchBoxProps) {
+export function SearchBox({
+  editing,
+  draft,
+  onDraftChange,
+  onSubmit,
+  committedQuery,
+  placeholder = "text, or @filter: path op value",
+}: SearchBoxProps) {
   // See TopicBar.tsx for why this cast is necessary and safe: InputRenderableOptions
   // inherits Textarea's `(event: SubmitEvent) => void` onSubmit alongside InputProps's
   // own `(value: string) => void`, and no real function literal satisfies the
@@ -38,7 +47,7 @@ export function SearchBox({ editing, draft, onDraftChange, onSubmit, committedQu
           onInput={onDraftChange}
           onSubmit={handleSubmit}
           focused
-          placeholder='text, or @filter: path op value'
+          placeholder={placeholder}
           style={{ flexGrow: 1 }}
         />
       ) : (

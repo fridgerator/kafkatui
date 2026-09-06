@@ -37,11 +37,13 @@ const TAB_HINTS: Record<TabId, Hint[]> = {
     { key: "↑↓", label: "select" },
     { key: "⏎", label: "details" },
     { key: "s", label: "sort by lag" },
+    { key: "/", label: "search" },
   ],
   topics: [
     { key: "↑↓", label: "select" },
-    { key: "⏎", label: "partitions" },
-    { key: "c", label: "config" },
+    { key: "⏎", label: "partitions & config" },
+    { key: "/", label: "search" },
+    { key: "r", label: "refresh" },
   ],
   produce: [
     { key: "↑↓", label: "field" },

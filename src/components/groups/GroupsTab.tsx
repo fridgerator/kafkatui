@@ -1,17 +1,16 @@
 import { useKeyboard } from "@opentui/react"
-import { useEffect, useMemo, useRef, useState } from "react"
-import { fetchGroupSnapshots, listRealGroupIds, type GroupSnapshot } from "../../kafka/groups"
-import { useKafkaClient } from "../../kafka/KafkaClientContext"
+import { useEffect, useMemo, useState } from "react"
+import { useGroupsData } from "../../kafka/GroupsDataContext"
 import { Sparkline } from "../Sparkline"
 import { theme } from "../../theme/monokai"
+import { SearchBox } from "../SearchBox"
+import { useListViewport } from "../useListViewport"
 import { GroupDetail } from "./GroupDetail"
 
 /** Spec §8.3: "flag groups where lag is nonzero but not decreasing." Only the trailing
  * few samples are checked (not the full sparkline history) so a genuinely stuck group is
  * flagged within ~15s, not after the full 30-sample/2.5-minute window fills up. */
 const STUCK_WINDOW = 3
-/** ~2.5 minutes of trend at the 5s poll interval below — enough for a readable sparkline. */
-const HISTORY_LENGTH = 30
 const POLL_INTERVAL_MS = 5000
 
 export function isGroupStuck(history: number[]): boolean {
@@ -23,82 +22,43 @@ export function isGroupStuck(history: number[]): boolean {
   return current >= oldest
 }
 
-function partitionHistoryKey(groupId: string, topic: string, partition: number): string {
-  return `${groupId}:${topic}:${partition}`
+interface GroupsTabProps {
+  onInputActiveChange: (active: boolean) => void
 }
 
-function pushCapped(history: number[], value: number): number[] {
-  const next = [...history, value]
-  return next.length > HISTORY_LENGTH ? next.slice(next.length - HISTORY_LENGTH) : next
-}
+/**
+ * The polled snapshots, selection, sort, and search query all live in `GroupsDataContext` —
+ * mounted once at the `App` level. Polling starts the first time this tab is visited and never
+ * stops (spec change: previously "switching away from the Groups tab stops polling and
+ * disconnects its admin client entirely ... coming back starts fresh"), so returning to this tab
+ * shows an instantly up-to-date, gap-free view instead of reconnecting from scratch.
+ */
+export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
+  const {
+    snapshots,
+    pollError,
+    sortByLag,
+    setSortByLag,
+    selectedGroupId,
+    setSelectedGroupId,
+    searchQuery,
+    setSearchQuery,
+    getAggregateHistory,
+    getPartitionHistory,
+    ensurePolling,
+  } = useGroupsData()
 
-export function GroupsTab() {
-  const kafka = useKafkaClient()
-
-  const [snapshots, setSnapshots] = useState<Map<string, GroupSnapshot>>(new Map())
-  const [pollError, setPollError] = useState<string | null>(null)
-  const [sortByLag, setSortByLag] = useState(true)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  const [editingSearch, setEditingSearch] = useState(false)
+  const [searchDraft, setSearchDraft] = useState("")
   const [detailOpen, setDetailOpen] = useState(false)
 
-  const aggregateHistoryRef = useRef(new Map<string, number[]>())
-  const partitionHistoryRef = useRef(new Map<string, number[]>())
+  useEffect(() => {
+    ensurePolling()
+  }, [ensurePolling])
 
   useEffect(() => {
-    const admin = kafka.admin()
-    let cancelled = false
-
-    const poll = async () => {
-      try {
-        const groupIds = await listRealGroupIds(admin)
-        const newSnapshots = await fetchGroupSnapshots(admin, groupIds)
-        if (cancelled) return
-
-        const liveGroupIds = new Set(newSnapshots.keys())
-        for (const key of aggregateHistoryRef.current.keys()) {
-          if (!liveGroupIds.has(key)) aggregateHistoryRef.current.delete(key)
-        }
-        for (const key of partitionHistoryRef.current.keys()) {
-          const groupId = key.split(":")[0]
-          if (groupId && !liveGroupIds.has(groupId)) partitionHistoryRef.current.delete(key)
-        }
-
-        for (const [groupId, snapshot] of newSnapshots) {
-          const prevAgg = aggregateHistoryRef.current.get(groupId) ?? []
-          aggregateHistoryRef.current.set(groupId, pushCapped(prevAgg, snapshot.totalLag))
-
-          for (const p of snapshot.partitionLags) {
-            const key = partitionHistoryKey(groupId, p.topic, p.partition)
-            const prev = partitionHistoryRef.current.get(key) ?? []
-            partitionHistoryRef.current.set(key, pushCapped(prev, p.lag ?? 0))
-          }
-        }
-
-        setSnapshots(newSnapshots)
-        setPollError(null)
-      } catch (err) {
-        if (!cancelled) setPollError((err as Error).message)
-      }
-    }
-
-    let interval: ReturnType<typeof setInterval> | undefined
-    admin
-      .connect()
-      .then(() => {
-        if (cancelled) return
-        void poll()
-        interval = setInterval(poll, POLL_INTERVAL_MS)
-      })
-      .catch((err) => {
-        if (!cancelled) setPollError(`Failed to connect: ${(err as Error).message}`)
-      })
-
-    return () => {
-      cancelled = true
-      if (interval) clearInterval(interval)
-      void admin.disconnect()
-    }
-  }, [kafka])
+    onInputActiveChange(editingSearch)
+  }, [editingSearch, onInputActiveChange])
 
   const sortedGroups = useMemo(() => {
     const groups = [...snapshots.values()]
@@ -110,25 +70,62 @@ export function GroupsTab() {
     return groups
   }, [snapshots, sortByLag])
 
+  const filteredGroups = useMemo(() => {
+    if (!searchQuery) return sortedGroups
+    const q = searchQuery.toLowerCase()
+    return sortedGroups.filter((g) => g.groupId.toLowerCase().includes(q))
+  }, [sortedGroups, searchQuery])
+
+  // Self-heal: if the current selection dropped out of the filtered list (search narrowed it, or
+  // the group went idle and got cleaned up), fall back to the filtered list's first entry.
+  useEffect(() => {
+    if (filteredGroups.length === 0) {
+      if (selectedGroupId !== null) setSelectedGroupId(null)
+      return
+    }
+    if (!filteredGroups.some((g) => g.groupId === selectedGroupId)) {
+      setSelectedGroupId(filteredGroups[0]!.groupId)
+    }
+  }, [filteredGroups, selectedGroupId, setSelectedGroupId])
+
+  const { boxRef, rowCount, viewportStart, scrollToIndex } = useListViewport(filteredGroups.length)
+
   useKeyboard((key) => {
     if (detailOpen) return // GroupDetail owns its own useKeyboard while mounted (mount-scoped, see MessageDetail)
+
+    if (editingSearch) {
+      if (key.name === "escape") setEditingSearch(false)
+      return
+    }
 
     switch (key.name) {
       case "s":
         setSortByLag((v) => !v)
         break
+      case "/":
+        setSearchDraft(searchQuery)
+        setEditingSearch(true)
+        break
       case "up": {
-        if (sortedGroups.length === 0) break
-        const idx = sortedGroups.findIndex((g) => g.groupId === selectedGroupId)
-        const next = sortedGroups[idx <= 0 ? 0 : idx - 1]
-        if (next) setSelectedGroupId(next.groupId)
+        if (filteredGroups.length === 0) break
+        const idx = filteredGroups.findIndex((g) => g.groupId === selectedGroupId)
+        const nextIdx = idx <= 0 ? 0 : idx - 1
+        const next = filteredGroups[nextIdx]
+        if (next) {
+          setSelectedGroupId(next.groupId)
+          scrollToIndex(nextIdx)
+        }
         break
       }
       case "down": {
-        if (sortedGroups.length === 0) break
-        const idx = sortedGroups.findIndex((g) => g.groupId === selectedGroupId)
-        const next = sortedGroups[idx === -1 ? 0 : Math.min(sortedGroups.length - 1, idx + 1)]
-        if (next) setSelectedGroupId(next.groupId)
+        if (filteredGroups.length === 0) break
+        const idx = filteredGroups.findIndex((g) => g.groupId === selectedGroupId)
+        const nextIdx = idx === -1 ? 0 : Math.min(filteredGroups.length - 1, idx + 1)
+        const next = filteredGroups[nextIdx]
+        if (next) {
+          setSelectedGroupId(next.groupId)
+          scrollToIndex(nextIdx)
+        }
         break
       }
       case "return":
@@ -143,10 +140,8 @@ export function GroupsTab() {
       return (
         <GroupDetail
           snapshot={snapshot}
-          aggregateHistory={aggregateHistoryRef.current.get(selectedGroupId) ?? []}
-          getPartitionHistory={(topic, partition) =>
-            partitionHistoryRef.current.get(partitionHistoryKey(selectedGroupId, topic, partition)) ?? []
-          }
+          aggregateHistory={getAggregateHistory(selectedGroupId)}
+          getPartitionHistory={(topic, partition) => getPartitionHistory(selectedGroupId, topic, partition)}
           onClose={() => setDetailOpen(false)}
         />
       )
@@ -155,10 +150,15 @@ export function GroupsTab() {
     // cleaned up) — fall through to the list rather than showing a stale/blank detail pane.
   }
 
+  const visible = filteredGroups.slice(viewportStart, viewportStart + rowCount)
+
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden" }}>
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 2, paddingLeft: 1 }}>
-        <text fg={theme.fgDim}>{`${sortedGroups.length} group${sortedGroups.length === 1 ? "" : "s"}`}</text>
+        <text fg={theme.fgDim}>
+          {`${filteredGroups.length} group${filteredGroups.length === 1 ? "" : "s"}`}
+          {searchQuery ? ` (of ${sortedGroups.length})` : ""}
+        </text>
         <text fg={theme.fgDim}>{`polling every ${POLL_INTERVAL_MS / 1000}s`}</text>
         <text fg={theme.fgDim}>{`sorted by ${sortByLag ? "lag" : "group ID"} (s to toggle)`}</text>
         {pollError && (
@@ -167,21 +167,36 @@ export function GroupsTab() {
           </text>
         )}
       </box>
+      <SearchBox
+        editing={editingSearch}
+        draft={searchDraft}
+        onDraftChange={setSearchDraft}
+        onSubmit={(value) => {
+          setSearchQuery(value)
+          setEditingSearch(false)
+        }}
+        committedQuery={searchQuery}
+        placeholder="group ID substring"
+      />
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}>
         <text fg={theme.fgDim} truncate wrapMode="none">
           {`${"GROUP ID".padEnd(28)}${"STATE".padEnd(12)}${"MEMBERS".padEnd(9)}${"LAG".padStart(8)}  TREND`}
         </text>
       </box>
-      <box style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
-        {sortedGroups.length === 0 ? (
+      <box ref={boxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
+        {filteredGroups.length === 0 ? (
           <box style={{ flexGrow: 1, flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
             <text fg={theme.fgDim}>
-              {pollError ? "Unable to reach the cluster." : "No consumer groups found."}
+              {pollError
+                ? "Unable to reach the cluster."
+                : searchQuery
+                  ? "No groups match."
+                  : "No consumer groups found."}
             </text>
           </box>
         ) : (
-          sortedGroups.map((group) => {
-            const history = aggregateHistoryRef.current.get(group.groupId) ?? []
+          visible.map((group) => {
+            const history = getAggregateHistory(group.groupId)
             const stuck = isGroupStuck(history)
             const selected = group.groupId === selectedGroupId
             const row =
