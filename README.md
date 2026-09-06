@@ -62,16 +62,44 @@ down so you can type freely — see [Conventions](#conventions).
 
 | Key | Action |
 |---|---|
-| `t` | Edit the topic name (starts blank; `Enter` connects, `Escape` cancels) |
-| `e` | Toggle latest/earliest start position (applies on next connect) |
+| `t` | Open the consumer configuration modal (topic, start position) — see below |
 | `↑` / `↓` | Move selection; `↑` pauses the live tail, `↓` to the bottom resumes it |
 | `Space` | Explicitly pause/resume following new messages |
 | `c` | Clear the buffer without disconnecting |
 | `x` | Export the current (filtered or full) buffer to NDJSON — see below |
 
-Switching to another tab disconnects the ephemeral consumer; returning to Consume starts fresh
-(re-enter the topic). This is a deliberate v1 simplification, not a bug — see the plan notes if you
-want tails to persist across tabs.
+Switching to another tab disconnects the ephemeral consumer; returning to Consume starts fresh —
+reconnecting is always an explicit `t` → Connect, never automatic. What *does* persist across tabs is
+the **configuration** itself (below), not the live stream: this is a deliberate scope decision, not an
+oversight — auto-reconnecting on return would have real data-loss implications (e.g. "latest" silently
+skipping whatever arrived while you were on another tab) that weren't part of what was asked for.
+
+**Consumer configuration modal** — `t` opens an overlay (not a full-screen replace, unlike the message
+detail/group detail/topic detail panes) on top of whatever's currently on screen:
+
+- **Topic** — a typeahead/combobox, not a blind text field: `Enter` opens it, typing live-filters the
+  same cached topic list the Topics tab uses (`TopicsDataContext` — no separate fetch, and it scrolls
+  once there are more matches than fit on screen), `↑`/`↓` move the highlighted suggestion, `Enter`
+  again commits it (or the raw typed text if nothing's highlighted, so a topic created after the last
+  Topics-tab fetch is still reachable by hand). `Escape` cancels back to the previous value.
+- **Start position** — a three-way radio (`Earliest` / `Latest` / `Timestamp`), focus it and press
+  `Enter` to cycle.
+- **Timestamp** — only shown when Start position is `Timestamp`. The label spells out the expected
+  format: **UTC**, either `2026-09-06T12:00:00Z`-style ISO 8601 or raw epoch milliseconds. An
+  offset-less date-time is deliberately parsed as UTC (`src/kafka/parseTimestampInput.ts`), not the
+  host machine's local time — the classic JS `Date.parse` gotcha, and the opposite of what the label
+  promises. An explicit `+02:00`-style offset is honored as given. Invalid input is rejected right on
+  Connect with a visible error rather than silently connecting from the wrong place.
+- `↑`/`↓` moves between fields, `Enter` on Connect validates and closes the modal (a fresh connection,
+  same as before), `Enter` on Cancel or `Escape` at the top level closes without connecting.
+
+Starting from a timestamp has one real, inherent latency worth knowing about: it can take up to ~5
+seconds after "connected" before the first correctly-seeked message shows up (kafkajs registers the
+fetch loop right after joining the group, before this app's own timestamp→offset lookup and `seek()`
+call land — the broker's long-poll on that first, pre-seek fetch has to time out before the corrected
+one gets dispatched). No wrong messages are ever shown in the meantime, it's purely a startup delay —
+see the comment in `src/kafka/consume.ts` for the full mechanics, verified against the real local
+broker with known message timestamps.
 
 **Avro decode**: `orders.avro` (or any topic with Confluent wire-format messages) decodes into the
 same JSON-preview format as plain JSON topics, as long as the profile has `schemaRegistry` configured
@@ -319,11 +347,13 @@ src/
 │   ├── fileLogger.ts      redirects kafkajs's logger + stray process "warning" events to ~/.kafka-tui/logs/ instead of the terminal
 │   ├── KafkaClientContext.tsx       shared Kafka client instance for all tabs
 │   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
-│   ├── consume.ts         ephemeral no-commit consumer wrapper
+│   ├── consume.ts         ephemeral no-commit consumer wrapper; earliest/latest/timestamp start position (GROUP_JOIN + seek for the timestamp case)
+│   ├── parseTimestampInput.ts  pure UTC timestamp parser for the config modal's Timestamp field (unit tested)
 │   ├── groups.ts          describeGroups/fetchOffsets orchestration + pure lag math (unit tested against the real broker)
 │   ├── topics.ts          listTopics/fetchTopicMetadata/describeConfigs orchestration + isInternalTopic/isUnderReplicated (unit tested against the real broker)
 │   ├── GroupsDataContext.tsx   App-level-persistent poll loop + snapshots/selection/search/sort (survives GroupsTab unmounting on tab switch)
 │   ├── TopicsDataContext.tsx   App-level-persistent one-shot fetch + overviews/selection/search (survives TopicsTab unmounting on tab switch)
+│   ├── ConsumeConfigContext.tsx  App-level-persistent last-submitted consumer config (topic/start position/timestamp) — not the live connection itself
 │   ├── auth/
 │   │   └── mskIam.ts      SASL/OAUTHBEARER token provider for MSK IAM auth — caching/early refresh, injectable token source (unit tested with a fake source; not yet tested against real MSK)
 │   └── decode/
@@ -345,10 +375,11 @@ src/
     ├── Sparkline.tsx      sparklineChars() (pure, unit tested) + a thin <Sparkline> wrapper
     ├── useListViewport.ts index-based windowed-list scrolling shared by Topics/Groups (pure computeViewportStart, unit tested)
     ├── consume/
-    │   ├── ConsumeTab.tsx     owns the ring buffer, flush timer, viewport/selection state, live filtering
-    │   ├── TopicBar.tsx       topic-name input + latest/earliest toggle
-    │   ├── MessageList.tsx    pure presentational, renders exactly rowCount rows, substring highlighting
-    │   └── MessageDetail.tsx  full pretty-print/hex/base64 view; owns its own useKeyboard (mount-scoped)
+    │   ├── ConsumeTab.tsx           owns the ring buffer, flush timer, viewport/selection state, live filtering
+    │   ├── TopicBar.tsx             read-only status line off ConsumeConfigContext (configuring happens in the modal now)
+    │   ├── ConsumerConfigModal.tsx  overlay: topic typeahead (off TopicsDataContext) + start position + timestamp
+    │   ├── MessageList.tsx          pure presentational, renders exactly rowCount rows, substring highlighting
+    │   └── MessageDetail.tsx        full pretty-print/hex/base64 view; owns its own useKeyboard (mount-scoped)
     ├── groups/
     │   ├── GroupsTab.tsx      view over GroupsDataContext — search/scroll/select, own useKeyboard
     │   └── GroupDetail.tsx    members + per-partition lag table; owns its own useKeyboard (mount-scoped)
@@ -402,10 +433,13 @@ so upgrades should be deliberate rather than picked up by a range.
   row; searching against it would silently miss real matches past that
   point. See `getSearchableText()` in `kafka/types.ts`.
 - **A component that's only ever mounted while its own mode is active can own
-  its own `useKeyboard`, without a mode check inside it.** `MessageDetail` is
-  the example — mounting/unmounting *is* the scope guard. Contrast with
-  `TopicBar`/`SearchBox`, which are always mounted and need `ConsumeTab` to
-  arbitrate their keys centrally via `mode`.
+  its own `useKeyboard`, without a mode check inside it.** `MessageDetail` and
+  `ConsumerConfigModal` are examples — mounting/unmounting *is* the scope
+  guard. Contrast with `SearchBox`, which is always mounted and needs
+  `ConsumeTab` to arbitrate its keys centrally via `mode`. (`TopicBar` used to
+  be in this category too, back when it owned an editable field directly —
+  now that configuring lives entirely in the modal, it's just a read-only
+  status line with no keys of its own.)
 - **A pure grammar (JSON, in this case) is cheaper to hand-roll than to pull
   in a general-purpose highlighter for.** `MessageDetail`'s JSON
   tokenizer/highlighter is a small recursive function producing colored

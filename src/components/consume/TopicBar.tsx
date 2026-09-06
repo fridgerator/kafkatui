@@ -1,56 +1,41 @@
+import type { StartPositionKind } from "../../kafka/ConsumeConfigContext"
 import { theme } from "../../theme/monokai"
 
 interface TopicBarProps {
-  mode: "browse" | "editingTopic"
-  topicDraft: string
-  onTopicDraftChange: (value: string) => void
-  onSubmit: (value: string) => void
-  activeTopic: string | null
-  fromBeginning: boolean
+  topic: string
+  startPosition: StartPositionKind
+  timestampInput: string
+}
+
+const START_POSITION_LABEL: Record<StartPositionKind, string> = {
+  earliest: "earliest",
+  latest: "latest",
+  timestamp: "timestamp",
 }
 
 /**
- * The Consume tab's only text input (spec §6.1 has no topic browser until
- * phase 8, so this is how a topic gets picked). `t` enters edit mode,
- * `Enter` connects, `Escape` cancels — all driven by ConsumeTab's own
- * `useKeyboard`, not OpenTUI's focus/blur events (see plan decision 1).
+ * Read-only status line — configuring a connection now happens exclusively in
+ * `ConsumerConfigModal` (`t` opens it), reading its last-submitted values from
+ * `ConsumeConfigContext` so this keeps showing them even while disconnected (e.g. right after
+ * switching back to this tab, before pressing Connect again).
  */
-export function TopicBar({ mode, topicDraft, onTopicDraftChange, onSubmit, activeTopic, fromBeginning }: TopicBarProps) {
-  const editing = mode === "editingTopic"
-
-  // `InputRenderableOptions` extends `Omit<TextareaOptions, "height" | ...>`, which
-  // does not strip `onSubmit` — so it inherits Textarea's own `(event: SubmitEvent)
-  // => void` (@opentui/core's own SubmitEvent class) alongside InputProps's explicit
-  // `(value: string) => void`, and TypeScript intersects the two. No real function
-  // literal satisfies that intersection; at runtime OpenTUI only ever calls an
-  // <input>'s onSubmit with a string (confirmed in @opentui/react's own
-  // src/types/components.d.ts), so the cast below is safe and scoped to this line.
-  const handleSubmit: any = onSubmit
+export function TopicBar({ topic, startPosition, timestampInput }: TopicBarProps) {
+  const positionLabel =
+    startPosition === "timestamp" && timestampInput ? `timestamp: ${timestampInput}` : START_POSITION_LABEL[startPosition]
 
   return (
     <box style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 1, overflow: "hidden" }}>
       <text flexShrink={0} fg={theme.fgDim}>
         Topic:
       </text>
-      {editing ? (
-        <input
-          value={topicDraft}
-          onInput={onTopicDraftChange}
-          onSubmit={handleSubmit}
-          focused
-          placeholder="e.g. orders.json"
-          style={{ flexGrow: 1 }}
-        />
-      ) : (
-        <text flexGrow={1} truncate wrapMode="none" fg={activeTopic ? theme.info : theme.fgDim}>
-          {activeTopic ?? "(none — press t to pick a topic)"}
-        </text>
-      )}
-      <text flexShrink={0} fg={theme.warning}>
-        {`[${fromBeginning ? "earliest" : "latest"}]`}
+      <text flexGrow={1} truncate wrapMode="none" fg={topic ? theme.info : theme.fgDim}>
+        {topic || "(none — press t to configure)"}
+      </text>
+      <text flexShrink={0} fg={theme.warning} truncate wrapMode="none">
+        {`[${positionLabel}]`}
       </text>
       <text flexShrink={0} fg={theme.fgDim}>
-        {editing ? "⏎ connect · esc cancel" : "t edit · e toggle"}
+        t configure
       </text>
     </box>
   )

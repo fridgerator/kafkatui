@@ -8,6 +8,7 @@ import { ConsumeTab, type ConsumeStatus } from "./components/consume/ConsumeTab"
 import { GroupsTab } from "./components/groups/GroupsTab"
 import { ProduceTab } from "./components/produce/ProduceTab"
 import { TopicsTab } from "./components/topics/TopicsTab"
+import { ConsumeConfigProvider } from "./kafka/ConsumeConfigContext"
 import { GroupsDataProvider } from "./kafka/GroupsDataContext"
 import { KafkaClientProvider } from "./kafka/KafkaClientContext"
 import { SchemaRegistryProvider, type SchemaRegistryHandle } from "./kafka/SchemaRegistryContext"
@@ -105,48 +106,50 @@ export function App({ profileName, kafka, schemaRegistry, ringBufferSize }: AppP
       <SchemaRegistryProvider value={schemaRegistry}>
         <TopicsDataProvider>
           <GroupsDataProvider>
-            <box
-              style={{
-                flexDirection: "column",
-                width: "100%",
-                height: "100%",
-                backgroundColor: theme.bg,
-              }}
-            >
-              <StatusBar
-                profile={profileName}
-                connection={activeTab === "consume" ? consumeStatus.connection : "disconnected"}
-                topic={activeTab === "consume" ? (consumeStatus.topic ?? undefined) : undefined}
-              />
-              <TabBar activeTab={activeTab} />
-
-              {/*
-                `overflow: hidden` is load-bearing: without it, tab content taller than
-                the panel paints over its siblings instead of being clipped, which
-                garbles the frame on short terminals. Panes that need to show more than
-                fits get a scrollbox of their own in later phases.
-              */}
+            <ConsumeConfigProvider>
               <box
                 style={{
-                  flexGrow: 1,
                   flexDirection: "column",
-                  overflow: "hidden",
-                  border: true,
-                  borderStyle: "rounded",
-                  borderColor: theme.border,
+                  width: "100%",
+                  height: "100%",
                   backgroundColor: theme.bg,
                 }}
               >
-                <TabContent
-                  activeTab={activeTab}
-                  ringBufferSize={ringBufferSize}
-                  onConsumeStatusChange={handleConsumeStatusChange}
-                  onInputActiveChange={setInputActive}
+                <StatusBar
+                  profile={profileName}
+                  connection={activeTab === "consume" ? consumeStatus.connection : "disconnected"}
+                  topic={activeTab === "consume" ? (consumeStatus.topic ?? undefined) : undefined}
                 />
-              </box>
+                <TabBar activeTab={activeTab} />
 
-              <HintBar activeTab={activeTab} />
-            </box>
+                {/*
+                  `overflow: hidden` is load-bearing: without it, tab content taller than
+                  the panel paints over its siblings instead of being clipped, which
+                  garbles the frame on short terminals. Panes that need to show more than
+                  fits get a scrollbox of their own in later phases.
+                */}
+                <box
+                  style={{
+                    flexGrow: 1,
+                    flexDirection: "column",
+                    overflow: "hidden",
+                    border: true,
+                    borderStyle: "rounded",
+                    borderColor: theme.border,
+                    backgroundColor: theme.bg,
+                  }}
+                >
+                  <TabContent
+                    activeTab={activeTab}
+                    ringBufferSize={ringBufferSize}
+                    onConsumeStatusChange={handleConsumeStatusChange}
+                    onInputActiveChange={setInputActive}
+                  />
+                </box>
+
+                <HintBar activeTab={activeTab} />
+              </box>
+            </ConsumeConfigProvider>
           </GroupsDataProvider>
         </TopicsDataProvider>
       </SchemaRegistryProvider>

@@ -21,8 +21,7 @@ const GLOBAL_HINTS: Hint[] = [
  */
 const TAB_HINTS: Record<TabId, Hint[]> = {
   consume: [
-    { key: "t", label: "topic" },
-    { key: "e", label: "latest/earliest" },
+    { key: "t", label: "configure" },
     { key: "↑↓", label: "scroll" },
     { key: "␣", label: "pause/resume" },
     { key: "c", label: "clear buffer" },

@@ -5,19 +5,22 @@ import { RingBuffer, type RingBufferSlot } from "../../buffer/ringBuffer"
 import { writeNdjsonExport } from "../../export/ndjson"
 import { evaluateFilter } from "../../filter/evaluateFilter"
 import { FilterParseError, parseFilter } from "../../filter/parseFilter"
-import { startConsuming, type ConsumeHandle } from "../../kafka/consume"
+import { useConsumeConfig } from "../../kafka/ConsumeConfigContext"
+import { startConsuming, type ConsumeHandle, type StartPosition } from "../../kafka/consume"
 import { decodeAvroMessage } from "../../kafka/decode/avro"
 import { looksLikeConfluentAvro } from "../../kafka/decode/decodeMessage"
 import { useKafkaClient } from "../../kafka/KafkaClientContext"
+import { parseTimestampInput } from "../../kafka/parseTimestampInput"
 import { useSchemaRegistry } from "../../kafka/SchemaRegistryContext"
 import { getOrDecode, getSearchableText, type BufferedMessage, type ConnectionState, type RawMessage } from "../../kafka/types"
 import { SearchBox } from "../SearchBox"
 import { theme } from "../../theme/monokai"
+import { ConsumerConfigModal, type ConsumerConfigModalSubmitValue } from "./ConsumerConfigModal"
 import { MessageDetail } from "./MessageDetail"
 import { MessageList } from "./MessageList"
 import { TopicBar } from "./TopicBar"
 
-type Mode = "browse" | "editingTopic" | "editingSearch" | "detail"
+type Mode = "browse" | "configuring" | "editingSearch" | "detail"
 
 const FILTER_PREFIX = "@filter:"
 
@@ -69,6 +72,7 @@ function compileQuery(query: string): { matcher: Matcher | null; error: string |
 export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange }: ConsumeTabProps) {
   const kafka = useKafkaClient()
   const { client: schemaRegistryClient, config: schemaRegistryConfig } = useSchemaRegistry()
+  const { config: consumeConfig, setConfig: setConsumeConfig } = useConsumeConfig()
 
   const ringBufferRef = useRef(new RingBuffer<BufferedMessage>(ringBufferSize))
   const pendingRef = useRef<RawMessage[]>([])
@@ -77,10 +81,13 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   const previousStopRef = useRef<Promise<void> | null>(null)
 
   const [mode, setMode] = useState<Mode>("browse")
-  const [topicDraft, setTopicDraft] = useState("")
+  // The topic actually connected to (or being connected to) — distinct from
+  // `consumeConfig.topic`, which is "whatever the modal last submitted" and persists across a
+  // tab switch even though the live connection itself deliberately does not (see
+  // ConsumeConfigContext.tsx's doc comment). Starts `null` on every mount: reconnecting is
+  // always an explicit Connect press, never automatic.
   const [activeTopic, setActiveTopic] = useState<string | null>(null)
-  const [fromBeginning, setFromBeginning] = useState(false)
-  const [connectRequest, setConnectRequest] = useState<{ topic: string; fromBeginning: boolean } | null>(null)
+  const [connectRequest, setConnectRequest] = useState<{ topic: string; startPosition: StartPosition } | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("disconnected")
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [exportStatus, setExportStatus] = useState<{ text: string; ok: boolean } | null>(null)
@@ -125,8 +132,10 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
 
   useEffect(() => {
     // "detail" isn't a text input — quitting or switching tabs while viewing a message
-    // should still work; only the two text-entry modes need to block global shortcuts.
-    onInputActiveChange(mode === "editingTopic" || mode === "editingSearch")
+    // should still work. "configuring" blocks everything for its whole open duration (a modal
+    // conventionally traps all input, not just while a sub-field is text-editing — see
+    // ConsumerConfigModal.tsx's doc comment); "editingSearch" only blocks while text-entering.
+    onInputActiveChange(mode === "configuring" || mode === "editingSearch")
   }, [mode, onInputActiveChange])
 
   // Measure available rows via the renderer's own size-change event rather than
@@ -253,7 +262,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       handle = startConsuming({
         kafka,
         topic: connectRequest.topic,
-        fromBeginning: connectRequest.fromBeginning,
+        startPosition: connectRequest.startPosition,
         onMessage: (raw) => {
           const pending = pendingRef.current
           if (pending.length >= PENDING_QUEUE_CAP) {
@@ -277,16 +286,20 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     }
   }, [connectRequest, kafka, ringBufferSize, schemaRegistryClient])
 
-  const handleSubmitTopic = useCallback(
-    (value: string) => {
-      const topic = value.trim()
-      if (!topic) return
-      setActiveTopic(topic)
-      setMode("browse")
-      setConnectRequest({ topic, fromBeginning })
-    },
-    [fromBeginning],
-  )
+  const handleModalSubmit = useCallback((value: ConsumerConfigModalSubmitValue) => {
+    const { topic, startPosition, timestampInput } = value
+    // Already validated inside the modal before it calls onSubmit — parseTimestampInput
+    // returning null here would mean that validation regressed, not a real user error, so
+    // falling back to "latest" rather than silently connecting from the wrong place.
+    const resolved: StartPosition =
+      startPosition === "timestamp"
+        ? { timestamp: parseTimestampInput(timestampInput) ?? Date.now() }
+        : startPosition
+    setConsumeConfig(value)
+    setActiveTopic(topic)
+    setMode("browse")
+    setConnectRequest({ topic, startPosition: resolved })
+  }, [setConsumeConfig])
 
   const handleSubmitSearch = useCallback((value: string) => {
     setSearchQuery(value)
@@ -318,11 +331,9 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   }, [])
 
   useKeyboard((key) => {
-    if (mode === "editingTopic") {
-      if (key.name === "escape") {
-        setMode("browse")
-        setTopicDraft("")
-      }
+    if (mode === "configuring") {
+      // ConsumerConfigModal owns its own useKeyboard while mounted (mount-scoped, same pattern
+      // as MessageDetail) — nothing to do here beyond not falling through to the switch below.
       return
     }
 
@@ -345,20 +356,13 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
 
     switch (key.name) {
       case "t":
-        // Starts blank rather than prefilled with the active topic — the common case
-        // for a debugging tool is switching to an unrelated topic, not tweaking the
-        // current one, and prefilling would force clearing it first every time.
-        setTopicDraft("")
-        setMode("editingTopic")
+        setMode("configuring")
         break
       case "/":
         // Prefilled with the current query, unlike the topic field — refining an
         // existing search is the common case here (decision 5).
         setSearchDraft(searchQuery)
         setMode("editingSearch")
-        break
-      case "e":
-        setFromBeginning((v) => !v)
         break
       case "return": {
         if (selectedSeq === null) break
@@ -477,7 +481,7 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   }, [tick, viewportStartSeq, rowCount, matches])
 
   const emptyMessage = !activeTopic
-    ? "Press t to pick a topic."
+    ? "Press t to configure a topic."
     : connection === "connecting"
       ? "Connecting…"
       : connection === "failed"
@@ -502,15 +506,8 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   }
 
   return (
-    <box style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden" }}>
-      <TopicBar
-        mode={mode === "editingTopic" ? "editingTopic" : "browse"}
-        topicDraft={topicDraft}
-        onTopicDraftChange={setTopicDraft}
-        onSubmit={handleSubmitTopic}
-        activeTopic={activeTopic}
-        fromBeginning={fromBeginning}
-      />
+    <box style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden", position: "relative" }}>
+      <TopicBar topic={consumeConfig.topic} startPosition={consumeConfig.startPosition} timestampInput={consumeConfig.timestampInput} />
       <SearchBox
         editing={mode === "editingSearch"}
         draft={searchDraft}
@@ -549,6 +546,15 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           filterActive={matches !== null && isFilterMode}
         />
       </box>
+      {mode === "configuring" && (
+        <ConsumerConfigModal
+          initialTopic={consumeConfig.topic}
+          initialStartPosition={consumeConfig.startPosition}
+          initialTimestampInput={consumeConfig.timestampInput}
+          onCancel={() => setMode("browse")}
+          onSubmit={handleModalSubmit}
+        />
+      )}
     </box>
   )
 }
