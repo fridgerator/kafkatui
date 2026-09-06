@@ -1,15 +1,25 @@
 import { Kafka, logLevel } from "kafkajs"
 import type { ClusterProfile } from "../config/types"
 import { createMskIamOauthBearerProvider } from "./auth/mskIam"
+import { createFileLogCreator } from "./fileLogger"
 
 export class UnsupportedAuthError extends Error {}
 
 export function createKafkaClient(profile: ClusterProfile): Kafka {
   const clientId = "kafka-tui"
+  // kafkajs's default logger writes to the terminal, corrupting the TUI — see fileLogger.ts's
+  // doc comment. `createFileLogCreator()` shares one timestamped file per process run across
+  // every client this function constructs.
+  const logCreator = createFileLogCreator()
 
   switch (profile.auth.type) {
     case "none":
-      return new Kafka({ clientId, brokers: profile.brokers, logLevel: logLevel.NOTHING })
+      return new Kafka({
+        clientId,
+        brokers: profile.brokers,
+        logLevel: logLevel.INFO,
+        logCreator,
+      })
 
     case "iam":
       // Spec §4: aws-msk-iam-sasl-signer-js + sasl.mechanism 'oauthbearer', not the built-in
@@ -24,7 +34,8 @@ export function createKafkaClient(profile: ClusterProfile): Kafka {
           mechanism: "oauthbearer",
           oauthBearerProvider: createMskIamOauthBearerProvider(profile.auth),
         },
-        logLevel: logLevel.NOTHING,
+        logLevel: logLevel.INFO,
+        logCreator,
       })
 
     case "sasl-scram":

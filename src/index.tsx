@@ -13,7 +13,14 @@ import { App } from "./app"
 import { ConfigError, loadConfig } from "./config/loadConfig"
 import { createKafkaClient } from "./kafka/client"
 import { createSchemaRegistryClient } from "./kafka/decode/avro"
+import { installProcessWarningLogger } from "./kafka/fileLogger"
 import { theme } from "./theme/monokai"
+
+// Before anything else: a raw Node process warning (e.g. a known kafkajs bug that emits
+// `TimeoutNegativeWarning` on every connection) bypasses kafkajs's own logger entirely and
+// prints straight to stderr by default, corrupting the full-screen TUI just like the console
+// logging this redirects below. See fileLogger.ts's doc comment for the full explanation.
+installProcessWarningLogger()
 
 let loaded: ReturnType<typeof loadConfig>
 try {

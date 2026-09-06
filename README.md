@@ -210,6 +210,30 @@ already states — a real, focusable, but inert control, not just decoration. Th
 interaction shape (not just the visual layout) for a future pass to wire up an actual producer without
 redesigning the screen.
 
+### Logging
+
+kafkajs's default logger writes straight to the terminal (`console.*`), which corrupts a
+full-screen TUI — every log line repaints garbage over the rendered frame. `src/kafka/client.ts`
+gives it a custom `logCreator` (`src/kafka/fileLogger.ts`) instead: every run writes one
+timestamped file, `~/.kafka-tui/logs/kafka-tui-<timestamp>.log`, JSON-lines-per-entry in the same
+shape kafkajs's own console logger produces (so existing "grep for `level:ERROR`" habits still
+work). This isn't just a level tweak — kafkajs lets the `KAFKAJS_LOG_LEVEL` environment variable
+*unconditionally* override whatever level the app configures (see `evaluateLogLevel` in kafkajs's
+own `loggers/index.js`), so an ambient env var on your machine can silently re-enable console
+output no matter what this app passes; redirecting the sink itself is the only fix that holds
+regardless of that variable. The level is `INFO` (connects, disconnects, group/coordinator
+changes), not the old `NOTHING`, since silently discarding diagnostics from a debugging tool
+defeats the point — you can `tail -f` the latest file in that directory while the TUI is running.
+
+Separately, a known kafkajs bug (a negative timeout computed in its request-queue throttle check)
+makes Node emit a raw `TimeoutNegativeWarning` on essentially every connection — via
+`process.emitWarning`, entirely bypassing kafkajs's own logger, so the `logCreator` above can't
+catch it. `src/index.tsx` calls `installProcessWarningLogger()` before anything else at startup,
+which replaces Node's default `"warning"` listener (the one that prints to stderr) with one that
+appends to the same log file instead — verified this actually suppresses the terminal output
+(Node's default listener fires *in addition to* any listener you add, so removing it first is
+required, not optional).
+
 ### Scripts
 
 | Script | Purpose |
@@ -272,6 +296,7 @@ src/
 ├── kafka/
 │   ├── types.ts           RawMessage, BufferedMessage, ConnectionState, getOrDecode(), getSearchableText()
 │   ├── client.ts          createKafkaClient(profile) — "none" and "iam" implemented, sasl-scram/sasl-plain stubbed
+│   ├── fileLogger.ts      redirects kafkajs's logger + stray process "warning" events to ~/.kafka-tui/logs/ instead of the terminal
 │   ├── KafkaClientContext.tsx       shared Kafka client instance for all tabs
 │   ├── SchemaRegistryContext.tsx    shared SchemaRegistry instance, null if unconfigured
 │   ├── consume.ts         ephemeral no-commit consumer wrapper
