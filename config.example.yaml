@@ -1,5 +1,10 @@
 # Example kafka-tui config (spec §3). Copy to ~/.kafka-tui/config.yaml, or
-# pass --config <path>, once the config loader lands in phase 3.
+# pass --config <path>.
+#
+# A config file is optional: every field below also has a CLI flag
+# (--brokers, --auth-type, --region, --aws-profile, --schema-registry-url,
+# --schema-registry-username/--schema-registry-password). Flags override the
+# selected profile field-by-field when both are given. See the README.
 #
 # `dev-local` matches docker/docker-compose.yml exactly: bring the stack up
 # with `docker compose -f docker/docker-compose.yml up -d` and this profile

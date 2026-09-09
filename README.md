@@ -46,6 +46,32 @@ bun run dev -- --config config.example.yaml
 `defaultProfile`) select which cluster to connect to (spec §3). A bad config, unknown profile, or
 missing `${ENV_VAR}` fails fast with a plain error on stderr before the TUI starts.
 
+### Configuration without a file
+
+Every profile field also has a CLI flag, so you can connect with no config file at all:
+
+| Flag | Purpose |
+|---|---|
+| `--brokers <a:9092,b:9092>` | bootstrap brokers (comma-separated) |
+| `--auth-type <none\|iam>` | auth mechanism (default `none`) |
+| `--region <region>` | AWS region for `iam` (default `us-east-1`) |
+| `--aws-profile <name>` | named AWS credential profile for `iam` (optional) |
+| `--schema-registry-url <url>` | Confluent Schema Registry URL |
+| `--schema-registry-username <u>` / `--schema-registry-password <p>` | registry basic auth |
+
+```sh
+# no config file needed
+bun run dev -- --brokers localhost:9092 --schema-registry-url http://localhost:8081
+
+# MSK with IAM auth
+bun run dev -- --brokers b-1.mycluster.abc123.kafka.us-east-1.amazonaws.com:9098 \
+  --auth-type iam --region us-east-1
+```
+
+When a config file *is* present, any flag you pass overrides that field of the selected profile;
+fields you don't pass are left as the file has them. `--brokers` is the minimum needed to run
+without a file.
+
 ### Keybindings
 
 | Key | Action |
@@ -239,7 +265,9 @@ for "an operator actually changed this" without hardcoding a list of "the config
 ### MSK IAM auth
 
 Set `auth.type: "iam"` on a profile (with `region`, and optionally a named `profile` for a non-default
-AWS credential profile) to connect to a real MSK cluster. Under the hood, `src/kafka/client.ts` sets
+AWS credential profile) to connect to a real MSK cluster — or pass `--auth-type iam --region <r>`
+(plus `--aws-profile <name>` for a non-default credential profile) with no config file. Under the
+hood, `src/kafka/client.ts` sets
 `ssl: true` and `sasl: { mechanism: 'oauthbearer', oauthBearerProvider }`, where the provider comes
 from `src/kafka/auth/mskIam.ts` — **not** kafkajs's built-in `sasl: { mechanism: 'aws' }`, which wants
 static access keys and a broker-side LoginModule MSK doesn't run; confirmed by reading kafkajs's own
@@ -355,7 +383,7 @@ src/
 ├── theme/monokai.ts       all color tokens (the only file with hex literals)
 ├── config/
 │   ├── types.ts           ClusterProfile / AuthConfig / KafkaTuiConfig (spec §3)
-│   └── loadConfig.ts      --config/--profile flags, YAML parse, ${ENV_VAR} interpolation
+│   └── loadConfig.ts      --config/--profile flags, YAML parse, ${ENV_VAR} interpolation, per-field CLI overrides (--brokers, --auth-type, …)
 ├── kafka/
 │   ├── types.ts           RawMessage, BufferedMessage, ConnectionState, getOrDecode(), getSearchableText()
 │   ├── client.ts          createKafkaClient(profile) — "none" and "iam" implemented, sasl-scram/sasl-plain stubbed
