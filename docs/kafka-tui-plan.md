@@ -272,7 +272,9 @@ Design notes for Claude Code:
 
 ### 6.5 Message detail view
 Selecting a message (Enter) opens a detail pane/modal:
-- Pretty-printed payload (syntax-highlighted JSON where applicable)
+- Payload browser: for JSON, a collapsible, virtualized tree with case-insensitive
+  key/value search (`/`, `n`/`N`); non-JSON falls back to a scrolling text view.
+  Large containers start collapsed so multi-hundred-KB messages open instantly.
 - Partition, offset, timestamp, key (decoded same as value), headers
 - Schema ID + subject/version (for Avro messages)
 - Raw hex/base64 toggle

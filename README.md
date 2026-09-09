@@ -178,27 +178,35 @@ status line make that scope visible, matching spec §6.3's guidance for the ring
 
 **Message detail** — `Enter` on a selected message replaces the list with a full detail pane:
 partition/offset/timestamp, the decoded key, decoded headers (`content-type`, `trace-id`, etc.), and
-the payload as syntax-highlighted pretty-printed JSON where applicable (JSON's grammar is simple enough
-that this is a small hand-rolled tokenizer rather than a heavier syntax-highlighting dependency — see
-[Conventions](#conventions)). For Avro messages with a schema registry configured, the schema ID shows
-immediately (read straight out of the wire bytes) and the subject/version fills in shortly after (a
-live lookup against the registry's REST API — `SchemaRegistry`'s own client doesn't expose this
-reverse lookup, so `kafka/decode/avro.ts` hits `GET /schemas/ids/{id}/versions` directly).
+the payload. For JSON the payload is a **collapsible tree** (`src/components/consume/JsonTreeView.tsx`):
+containers with more than 20 children, or below depth 6, start collapsed, and only the rows on screen
+are rendered — a few-hundred-KB message opens instantly instead of stalling for seconds building one
+giant text node. For Avro messages with a schema registry configured, the schema ID shows immediately
+(read straight out of the wire bytes) and the subject/version fills in shortly after (a live lookup
+against the registry's REST API — `SchemaRegistry`'s own client doesn't expose this reverse lookup, so
+`kafka/decode/avro.ts` hits `GET /schemas/ids/{id}/versions` directly).
 
 | Key | Action |
 |---|---|
+| `↑`/`↓` (`j`/`k`) | Move the selection |
+| `→` / `←` | Expand / collapse the selected node (or step to first child / jump to parent) |
+| `Space` / `Enter` | Toggle the selected node |
+| `g` / `G` | Jump to first / last row |
+| `[` / `]` | Collapse all / expand all |
+| `/` | Search — case-insensitive substring over **both key names and scalar values** |
+| `n` / `N` | Jump to the next / previous match (auto-expands ancestors, scrolls to it) |
 | `r` | Cycle the payload view: decoded → hex → base64 → decoded |
 | `y` | Copy whatever's currently displayed to the clipboard |
-| `Escape` | Close, return to the list |
+| `Escape` | Close, return to the list (in search: leave the search box) |
 
 Copy uses OSC 52 (if the terminal supports it — checked via `renderer.isOsc52Supported()`) or falls
 back to writing `~/.kafka-tui/last-copy.txt`, per spec's own suggested fallback, with a status message
-saying which happened. Copy always copies the *currently displayed* view, not always the raw bytes —
-if you're looking at pretty JSON and hit `y`, you get that text; switch to the hex or base64 view first
-if it's specifically the raw value you want.
+saying which happened. Copy always copies the *currently displayed* view (for the JSON tree: the full
+pretty-printed value), not always the raw bytes — switch to the hex or base64 view first if it's
+specifically the raw value you want.
 
-Scrolling through a long payload works via the arrow keys, `j`/`k`, Page Up/Down, and Home/End — that's
-OpenTUI's `<scrollbox>` handling it natively, not custom key-handling code here.
+The hex and base64 views still use OpenTUI's `<scrollbox>` natively (arrow keys, `j`/`k`, Page
+Up/Down, Home/End); they aren't virtualized yet, so they can be slow on very large payloads.
 
 **Export to NDJSON** — `x` in the Consume tab's list view writes whatever's currently matching the
 active search/filter (or the whole buffer, if none is active) to
@@ -336,16 +344,18 @@ required, not optional).
 ## Local Kafka stack
 
 A single-node KRaft-mode Kafka broker, a Confluent Schema Registry, and a synthetic producer that
-continuously writes realistic nested "order" data to three topics, one encoding each:
+continuously writes realistic nested "order" data to four topics:
 
 | Topic | Encoding | Notes |
 |---|---|---|
 | `orders.json` | JSON | nested `items[].sku`, `customer.address.zip`, `customer.roles[]` |
 | `orders.avro` | Confluent wire-format Avro | same shape, schema registered as `orders.avro-value` |
 | `logs.text` | plain text | log-line style messages, exercises the non-JSON decode fallback |
+| `orders.large` | JSON (~300 KB) | large nested payload to exercise the TUI's large-message rendering; `LARGE_PAYLOAD_BYTES` / `LARGE_INTERVAL_MS` tune size and cadence |
 
 Each topic has 4 partitions and a random key per message, so there's real data for the Topics tab's
-partition/throughput view and the `@filter:` nested-path examples.
+partition/throughput view and the `@filter:` nested-path examples. `orders.large` runs on its own
+slow cadence (default one message every 3 s), independent of the base/burst rate.
 
 ```sh
 docker compose -f docker/docker-compose.yml up -d
@@ -422,7 +432,8 @@ src/
     │   ├── TopicBar.tsx             read-only status line off ConsumeConfigContext (configuring happens in the modal now)
     │   ├── ConsumerConfigModal.tsx  overlay: topic typeahead (off TopicsDataContext) + start position + timestamp
     │   ├── MessageList.tsx          pure presentational, renders exactly rowCount rows, substring highlighting
-    │   └── MessageDetail.tsx        full pretty-print/hex/base64 view; owns its own useKeyboard (mount-scoped)
+    │   ├── MessageDetail.tsx        detail pane shell (key/headers/schema + view cycle); owns its own useKeyboard (mount-scoped)
+    │   └── JsonTreeView.tsx         collapsible, virtualized JSON tree with key/value search (the decoded-JSON body)
     ├── groups/
     │   ├── GroupsTab.tsx      view over GroupsDataContext — search/scroll/select, own useKeyboard
     │   └── GroupDetail.tsx    members + per-partition lag table; owns its own useKeyboard (mount-scoped)
@@ -483,12 +494,15 @@ so upgrades should be deliberate rather than picked up by a range.
   be in this category too, back when it owned an editable field directly —
   now that configuring lives entirely in the modal, it's just a read-only
   status line with no keys of its own.)
-- **A pure grammar (JSON, in this case) is cheaper to hand-roll than to pull
-  in a general-purpose highlighter for.** `MessageDetail`'s JSON
-  tokenizer/highlighter is a small recursive function producing colored
-  `<span>`s — no new dependency, versus OpenTUI's tree-sitter-backed `<code>`
-  component, which needs a `syntaxStyle` and a grammar for something this
-  simple and fully known ahead of time.
+- **A pure grammar (JSON, in this case) is cheaper to model directly than to
+  pull in a general-purpose viewer for.** The message detail's JSON body is a
+  hand-rolled collapsible tree (`kafka/decode/jsonTree.ts` builds the model,
+  `components/consume/JsonTreeView.tsx` renders a windowed slice of it) — no new
+  dependency, and none of the terminal JSON viewers on npm target OpenTUI's
+  renderer anyway. An earlier version pretty-printed the whole value into one
+  `<text>` of colored `<span>`s; that's fine for small messages but takes
+  seconds to lay out at a few hundred KB, which is why the tree + virtualization
+  replaced it.
 - **Split I/O-driven modules into a pure core + a thin async shell.**
   `groups.ts`'s `computeGroupSnapshot()` takes already-fetched data and does
   the lag math with no network calls at all, fully unit-testable with

@@ -183,6 +183,98 @@ export function randomOrderEvent(customerId: string): OrderEvent {
   }
 }
 
+export interface LargeLineItem {
+  lineId: string
+  sku: string
+  name: string
+  description: string
+  quantity: number
+  unitPrice: number
+  discountPct: number
+  taxCode: string
+  warehouse: string
+  lotNumbers: string[]
+  attributes: {
+    color: string
+    size: string
+    weightGrams: number
+    dimensions: { l: number; w: number; h: number }
+  }
+}
+
+/** Object returned by `randomLargeOrderEvent` — the familiar order shape plus a bulky line-item array. */
+export type LargeOrderEvent = OrderEvent & {
+  batchId: string
+  generatedAt: string
+  lineItems: LargeLineItem[]
+}
+
+const WAREHOUSES = ["us-east-1a", "us-east-1b", "eu-west-1a", "ap-south-1a", "us-west-2c"]
+const COLORS = ["obsidian", "sand", "moss", "cobalt", "crimson", "ivory", "slate", "amber"]
+const SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
+const TAX_CODES = ["STD-20", "RED-05", "ZERO-00", "EXEMPT", "DIGITAL-15"]
+const DESCRIPTION_FRAGMENTS = [
+  "precision-machined aluminium housing",
+  "impact-resistant polymer shell",
+  "recycled-content packaging",
+  "field-replaceable battery module",
+  "calibrated to ISO 17025 tolerances",
+  "ships with a two-year limited warranty",
+  "compatible with the previous-generation mount",
+  "includes a spare gasket set and hex key",
+  "surface-treated for salt-spray resistance",
+  "individually serialised for traceability",
+]
+
+function randomLargeLineItem(): LargeLineItem {
+  const product = pick(SKUS)
+  const descriptionParts = Array.from({ length: 3 + randomInt(4) }, () => pick(DESCRIPTION_FRAGMENTS))
+  return {
+    lineId: crypto.randomUUID(),
+    sku: product.sku,
+    name: product.name,
+    description: `${product.name}: ${descriptionParts.join("; ")}.`,
+    quantity: 1 + randomInt(20),
+    unitPrice: Number((5 + Math.random() * 495).toFixed(2)),
+    discountPct: Math.random() > 0.7 ? Number((Math.random() * 0.3).toFixed(3)) : 0,
+    taxCode: pick(TAX_CODES),
+    warehouse: pick(WAREHOUSES),
+    lotNumbers: Array.from({ length: 3 }, () => crypto.randomUUID()),
+    attributes: {
+      color: pick(COLORS),
+      size: pick(SIZES),
+      weightGrams: 50 + randomInt(5000),
+      dimensions: { l: 1 + randomInt(200), w: 1 + randomInt(200), h: 1 + randomInt(200) },
+    },
+  }
+}
+
+/**
+ * A deliberately large order event for `orders.large` — the same nested shape as
+ * `randomOrderEvent` plus a `lineItems` array grown until the serialized JSON
+ * reaches `targetBytes` (default caller passes ~300 KB). Arrays-of-objects, not
+ * one giant string, so the TUI's JSON tokenizer and detail scrollbox get
+ * realistic structural work.
+ */
+export function randomLargeOrderEvent(targetBytes: number): LargeOrderEvent {
+  const customerId = randomCustomerId()
+  const event: LargeOrderEvent = {
+    ...randomOrderEvent(customerId),
+    batchId: crypto.randomUUID(),
+    generatedAt: new Date().toISOString(),
+    lineItems: [],
+  }
+
+  // Grow in small batches, re-measuring between them, rather than stringifying
+  // the whole (growing) event on every single push — that's quadratic and this
+  // runs on a timer. The 50k cap stops a misconfigured huge target spinning.
+  const BATCH = 20
+  for (let i = 0; i < 50_000 && JSON.stringify(event).length < targetBytes; i += BATCH) {
+    for (let j = 0; j < BATCH; j++) event.lineItems.push(randomLargeLineItem())
+  }
+  return event
+}
+
 const LOG_LEVELS = ["INFO", "WARN", "ERROR", "DEBUG"] as const
 const LOG_TEMPLATES = [
   (id: string) => `order ${id} processed successfully in ${20 + randomInt(400)}ms`,

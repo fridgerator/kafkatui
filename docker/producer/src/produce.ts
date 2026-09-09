@@ -11,12 +11,19 @@
  */
 import { Kafka, logLevel, type Message } from "kafkajs"
 import { SchemaRegistry, SchemaType } from "@kafkajs/confluent-schema-registry"
-import { ORDER_AVRO_SCHEMA, randomCustomerId, randomLogLine, randomOrderEvent } from "./schema"
+import {
+  ORDER_AVRO_SCHEMA,
+  randomCustomerId,
+  randomLargeOrderEvent,
+  randomLogLine,
+  randomOrderEvent,
+} from "./schema"
 
 const TOPICS = {
   json: "orders.json",
   avro: "orders.avro",
   text: "logs.text",
+  large: "orders.large",
 } as const
 const PARTITIONS_PER_TOPIC = 4
 
@@ -28,6 +35,13 @@ const burstEnabled = (process.env.BURST_ENABLED ?? "true") === "true"
 const burstRate = Number(process.env.BURST_RATE_MSGS_PER_SEC ?? 200)
 const burstIntervalMs = Number(process.env.BURST_INTERVAL_MS ?? 60_000)
 const burstDurationMs = Number(process.env.BURST_DURATION_MS ?? 5_000)
+
+// `orders.large` runs on its own slow cadence, independent of the base/burst
+// loop above. Targets above ~900_000 also need the broker `max.message.bytes`,
+// the producer `maxRequestSize`, and the TUI consumer's `maxBytesPerPartition`
+// raised — all three default to ~1 MB.
+const largePayloadBytes = Number(process.env.LARGE_PAYLOAD_BYTES ?? 300_000)
+const largeIntervalMs = Number(process.env.LARGE_INTERVAL_MS ?? 3_000)
 
 const kafka = new Kafka({ clientId: "kafka-tui-synthetic-producer", brokers, logLevel: logLevel.WARN })
 const producer = kafka.producer()
@@ -100,6 +114,34 @@ async function produceOnce(avroSchemaId: number): Promise<void> {
   })
 }
 
+async function produceLargeOnce(): Promise<void> {
+  const customerId = randomCustomerId()
+  const event = randomLargeOrderEvent(largePayloadBytes)
+  const value = JSON.stringify(event)
+  await producer.send({
+    topic: TOPICS.large,
+    messages: [
+      {
+        key: customerId,
+        value,
+        headers: { ...traceHeaders("application/json"), "x-payload-bytes": String(Buffer.byteLength(value)) },
+      },
+    ],
+  })
+}
+
+/** Own loop, own cadence — one send failure is logged and the loop continues. */
+async function produceLargeLoop(): Promise<void> {
+  for (;;) {
+    try {
+      await produceLargeOnce()
+    } catch (err) {
+      console.error("[producer] large-payload send failed", err)
+    }
+    await sleep(largeIntervalMs)
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`[producer] connecting to ${brokers.join(",")}, schema registry ${schemaRegistryUrl}`)
   await admin.connect()
@@ -108,6 +150,9 @@ async function main(): Promise<void> {
   console.log(`[producer] topics ready, orders.avro schema id ${avroSchemaId}`)
 
   await producer.connect()
+
+  console.log(`[producer] orders.large: ~${Math.round(largePayloadBytes / 1000)} KB every ${largeIntervalMs}ms`)
+  void produceLargeLoop()
 
   let sentSinceLastLog = 0
   let lastLogAt = Date.now()

@@ -10,6 +10,7 @@ import { decodeMessage, extractConfluentSchemaId } from "../../kafka/decode/deco
 import { toFullHexDump } from "../../kafka/decode/hexDump"
 import { getOrDecode, type BufferedMessage } from "../../kafka/types"
 import { theme } from "../../theme/monokai"
+import { JsonTreeView } from "./JsonTreeView"
 
 type ViewMode = "decoded" | "hex" | "base64"
 const VIEW_CYCLE: ViewMode[] = ["decoded", "hex", "base64"]
@@ -18,66 +19,8 @@ interface MessageDetailProps {
   slot: RingBufferSlot<BufferedMessage>
   schemaRegistryConfig: SchemaRegistryConfig | undefined
   onClose: () => void
-}
-
-export interface JsonToken {
-  text: string
-  color?: string
-}
-
-/** JSON's grammar is simple and fully known ahead of time, so a small hand-rolled
- * tokenizer is simpler and dependency-free compared to OpenTUI's tree-sitter-backed
- * `<code>` component (which also requires a `syntaxStyle` prop) — see the phase 6 plan's
- * research notes. Reuses the syn* theme tokens defined since phase 1 for this exact purpose. */
-function tokenizeJsonValue(value: unknown, indent: number, tokens: JsonToken[]): void {
-  const pad = "  ".repeat(indent)
-  const childPad = "  ".repeat(indent + 1)
-
-  if (value === null) {
-    tokens.push({ text: "null", color: theme.synNull })
-  } else if (typeof value === "boolean") {
-    tokens.push({ text: String(value), color: theme.synBoolean })
-  } else if (typeof value === "number") {
-    tokens.push({ text: String(value), color: theme.synNumber })
-  } else if (typeof value === "string") {
-    tokens.push({ text: JSON.stringify(value), color: theme.synString })
-  } else if (Array.isArray(value)) {
-    if (value.length === 0) {
-      tokens.push({ text: "[]" })
-      return
-    }
-    tokens.push({ text: "[\n" })
-    value.forEach((item, i) => {
-      tokens.push({ text: childPad })
-      tokenizeJsonValue(item, indent + 1, tokens)
-      tokens.push({ text: i < value.length - 1 ? ",\n" : "\n" })
-    })
-    tokens.push({ text: `${pad}]` })
-  } else if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-    if (entries.length === 0) {
-      tokens.push({ text: "{}" })
-      return
-    }
-    tokens.push({ text: "{\n" })
-    entries.forEach(([key, val], i) => {
-      tokens.push({ text: childPad })
-      tokens.push({ text: JSON.stringify(key), color: theme.synKey })
-      tokens.push({ text: ": " })
-      tokenizeJsonValue(val, indent + 1, tokens)
-      tokens.push({ text: i < entries.length - 1 ? ",\n" : "\n" })
-    })
-    tokens.push({ text: `${pad}}` })
-  } else {
-    tokens.push({ text: String(value) })
-  }
-}
-
-/** Wraps the mutate-an-array-in-place tokenizer for direct unit testing. */
-export function tokenizeJson(value: unknown): JsonToken[] {
-  const tokens: JsonToken[] = []
-  tokenizeJsonValue(value, 0, tokens)
-  return tokens
+  /** True while the JSON tree's search input is focused — lets the tab suppress global keys. */
+  onSearchingChange?: (searching: boolean) => void
 }
 
 export function decodeHeaderValue(value: Buffer | string | (Buffer | string)[] | undefined): string {
@@ -103,11 +46,16 @@ export function writeCopyFallbackFile(text: string): string {
  * and edit-mode keys via `mode`. This component only ever *exists* in the tree
  * while detail mode is active (`ConsumeTab` conditionally renders it), so
  * mounting is already the scope guard; no mode check needed here.
+ *
+ * For decoded JSON the body is `JsonTreeView` (collapsible, virtualized, with
+ * key/value search) — it owns its own navigation keys; this handler stands down
+ * entirely while its search input is focused (`treeSearching`).
  */
-export function MessageDetail({ slot, schemaRegistryConfig, onClose }: MessageDetailProps) {
+export function MessageDetail({ slot, schemaRegistryConfig, onClose, onSearchingChange }: MessageDetailProps) {
   const renderer = useRenderer()
   const [view, setView] = useState<ViewMode>("decoded")
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
+  const [treeSearching, setTreeSearching] = useState(false)
   const [subjectVersions, setSubjectVersions] = useState<{ subject: string; version: number }[] | null>(null)
 
   const message = slot.value
@@ -136,21 +84,26 @@ export function MessageDetail({ slot, schemaRegistryConfig, onClose }: MessageDe
 
   const keyText = decodeMessage(message.key).preview
 
-  const prettyJsonTokens = useMemo(() => {
-    if (decoded.kind !== "json" || decoded.value === undefined) return null
-    return tokenizeJson(decoded.value)
-  }, [decoded])
+  const isJsonTree = view === "decoded" && decoded.kind === "json" && decoded.value !== undefined
 
-  /** Plain text for the current view — used for both non-JSON display and the copy target. */
+  /** Plain text for the current view — non-JSON display, and the `y` copy target for every view. */
   const plainViewText = useMemo(() => {
     if (view === "hex") return message.value ? toFullHexDump(message.value) : "(empty)"
     if (view === "base64") return message.value ? message.value.toString("base64") : "(empty)"
-    if (prettyJsonTokens) return JSON.stringify(decoded.value, null, 2)
+    if (decoded.kind === "json" && decoded.value !== undefined) return JSON.stringify(decoded.value, null, 2)
     if (decoded.kind === "text") return message.value?.toString("utf8") ?? decoded.preview
     return decoded.preview
-  }, [view, decoded, message.value, prettyJsonTokens])
+  }, [view, decoded, message.value])
+
+  useEffect(() => {
+    onSearchingChange?.(treeSearching)
+  }, [treeSearching, onSearchingChange])
 
   useKeyboard((key) => {
+    // While the tree's search input has focus, let it own every key (its own
+    // handler catches escape to leave search); don't cycle views or close here.
+    if (treeSearching) return
+
     if (key.name === "escape") {
       onClose()
     } else if (key.name === "r") {
@@ -216,17 +169,13 @@ export function MessageDetail({ slot, schemaRegistryConfig, onClose }: MessageDe
           </text>
         )}
       </box>
-      <scrollbox focused style={{ flexGrow: 1 }}>
-        <text>{prettyJsonTokens && view === "decoded" ? renderTokens(prettyJsonTokens) : plainViewText}</text>
-      </scrollbox>
+      {isJsonTree ? (
+        <JsonTreeView value={decoded.value} onSearchingChange={setTreeSearching} />
+      ) : (
+        <scrollbox focused style={{ flexGrow: 1 }}>
+          <text>{plainViewText}</text>
+        </scrollbox>
+      )}
     </box>
   )
-}
-
-function renderTokens(tokens: JsonToken[]) {
-  return tokens.map((token, i) => (
-    <span key={i} fg={token.color ?? theme.fg}>
-      {token.text}
-    </span>
-  ))
 }

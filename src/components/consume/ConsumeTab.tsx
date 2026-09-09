@@ -116,6 +116,9 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
   const [searchQuery, setSearchQuery] = useState("")
 
   const [detailSlot, setDetailSlot] = useState<RingBufferSlot<BufferedMessage> | null>(null)
+  // True while MessageDetail's JSON tree search input is focused — a text input,
+  // so global keys (q / Tab) must be suppressed the same as "editingSearch".
+  const [detailSearching, setDetailSearching] = useState(false)
 
   const [rowCount, setRowCount] = useState(1)
   const [viewportStartSeq, setViewportStartSeq] = useState(0)
@@ -158,8 +161,8 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     // should still work. "configuring" blocks everything for its whole open duration (a modal
     // conventionally traps all input, not just while a sub-field is text-editing — see
     // ConsumerConfigModal.tsx's doc comment); "editingSearch" only blocks while text-entering.
-    onInputActiveChange(mode === "configuring" || mode === "editingSearch")
-  }, [mode, onInputActiveChange])
+    onInputActiveChange(mode === "configuring" || mode === "editingSearch" || detailSearching)
+  }, [mode, detailSearching, onInputActiveChange])
 
   // Measure available rows via the renderer's own size-change event rather than
   // hardcoding chrome-height arithmetic — robust to any future change in the
@@ -552,9 +555,11 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
       <MessageDetail
         slot={detailSlot}
         schemaRegistryConfig={schemaRegistryConfig}
+        onSearchingChange={setDetailSearching}
         onClose={() => {
           setMode("browse")
           setDetailSlot(null)
+          setDetailSearching(false)
         }}
       />
     )

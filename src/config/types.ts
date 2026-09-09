@@ -54,4 +54,4 @@ export interface KafkaTuiConfig {
   ringBufferSize?: number
 }
 
-export const DEFAULT_RING_BUFFER_SIZE = 5000
+export const DEFAULT_RING_BUFFER_SIZE = 1000

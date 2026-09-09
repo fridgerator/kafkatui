@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ConfigError, loadConfig } from "./loadConfig"
+import { DEFAULT_RING_BUFFER_SIZE } from "./types"
 
 let dir: string
 
@@ -33,7 +34,7 @@ defaultProfile: dev-local
     const { profile, ringBufferSize } = loadConfig(["--config", path])
     expect(profile.name).toBe("dev-local")
     expect(profile.brokers).toEqual(["localhost:9092"])
-    expect(ringBufferSize).toBe(5000)
+    expect(ringBufferSize).toBe(DEFAULT_RING_BUFFER_SIZE)
   })
 
   test("--profile overrides defaultProfile", () => {
