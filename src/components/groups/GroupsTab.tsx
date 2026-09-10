@@ -4,6 +4,7 @@ import { useGroupsData } from "../../kafka/GroupsDataContext"
 import { Sparkline } from "../Sparkline"
 import { theme } from "../../theme/monokai"
 import { SearchBox } from "../SearchBox"
+import { rowClickAction, wheelSteps } from "../mouse"
 import { fitCell, fitCellRight } from "../tableCell"
 import { useListViewport } from "../useListViewport"
 import { GroupDetail } from "./GroupDetail"
@@ -101,6 +102,29 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
 
   const { boxRef, rowCount, viewportStart, scrollToIndex } = useListViewport(filteredGroups.length)
 
+  // Shared by the arrow keys and the mouse wheel. `delta` is signed; a wheel notch passes ±3.
+  const moveSelection = (delta: number) => {
+    if (filteredGroups.length === 0) return
+    const idx = filteredGroups.findIndex((g) => g.groupId === selectedGroupId)
+    const nextIdx = idx === -1 ? 0 : Math.max(0, Math.min(filteredGroups.length - 1, idx + delta))
+    const next = filteredGroups[nextIdx]
+    if (next) {
+      setSelectedGroupId(next.groupId)
+      scrollToIndex(nextIdx)
+    }
+  }
+
+  const selectGroup = (groupId: string) => {
+    const idx = filteredGroups.findIndex((g) => g.groupId === groupId)
+    if (idx === -1) return
+    setSelectedGroupId(groupId)
+    scrollToIndex(idx)
+  }
+
+  const openDetail = (groupId: string) => {
+    if (snapshots.has(groupId)) setDetailOpen(true)
+  }
+
   useKeyboard((key) => {
     if (detailOpen) return // GroupDetail owns its own useKeyboard while mounted (mount-scoped, see MessageDetail)
 
@@ -117,28 +141,12 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
         setSearchDraft(searchQuery)
         setEditingSearch(true)
         break
-      case "up": {
-        if (filteredGroups.length === 0) break
-        const idx = filteredGroups.findIndex((g) => g.groupId === selectedGroupId)
-        const nextIdx = idx <= 0 ? 0 : idx - 1
-        const next = filteredGroups[nextIdx]
-        if (next) {
-          setSelectedGroupId(next.groupId)
-          scrollToIndex(nextIdx)
-        }
+      case "up":
+        moveSelection(-1)
         break
-      }
-      case "down": {
-        if (filteredGroups.length === 0) break
-        const idx = filteredGroups.findIndex((g) => g.groupId === selectedGroupId)
-        const nextIdx = idx === -1 ? 0 : Math.min(filteredGroups.length - 1, idx + 1)
-        const next = filteredGroups[nextIdx]
-        if (next) {
-          setSelectedGroupId(next.groupId)
-          scrollToIndex(nextIdx)
-        }
+      case "down":
+        moveSelection(1)
         break
-      }
       case "return":
         if (selectedGroupId && snapshots.has(selectedGroupId)) setDetailOpen(true)
         break
@@ -194,7 +202,11 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
           {`${fitCell("GROUP ID", nameWidth)}${fitCell("STATE", STATE_W)}${fitCell("MEMBERS", MEMBERS_W)}${fitCellRight("LAG", LAG_W)}  TREND`}
         </text>
       </box>
-      <box ref={boxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
+      <box
+        ref={boxRef}
+        onMouseScroll={(e) => moveSelection(wheelSteps(e))}
+        style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}
+      >
         {filteredGroups.length === 0 ? (
           <box style={{ flexGrow: 1, flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
             <text fg={theme.fgDim}>
@@ -219,6 +231,11 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
             return (
               <box
                 key={group.groupId}
+                onMouseDown={() =>
+                  rowClickAction(group.groupId, selectedGroupId) === "open"
+                    ? openDetail(group.groupId)
+                    : selectGroup(group.groupId)
+                }
                 style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}
                 backgroundColor={selected ? theme.bgSelected : undefined}
               >

@@ -4,6 +4,7 @@ import { useListViewport } from "../useListViewport"
 import { useTopicsData } from "../../kafka/TopicsDataContext"
 import { theme } from "../../theme/monokai"
 import { SearchBox } from "../SearchBox"
+import { rowClickAction, wheelSteps } from "../mouse"
 import { fitCell } from "../tableCell"
 import { TopicDetail } from "./TopicDetail"
 
@@ -71,6 +72,25 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
 
   const { boxRef, rowCount, viewportStart, scrollToIndex } = useListViewport(filteredTopics.length)
 
+  // Shared by the arrow keys and the mouse wheel. `delta` is signed; a wheel notch passes ±3.
+  const moveSelection = (delta: number) => {
+    if (filteredTopics.length === 0) return
+    const idx = filteredTopics.findIndex((t) => t.name === selectedTopic)
+    const nextIdx = idx === -1 ? 0 : Math.max(0, Math.min(filteredTopics.length - 1, idx + delta))
+    const next = filteredTopics[nextIdx]
+    if (next) {
+      setSelectedTopic(next.name)
+      scrollToIndex(nextIdx)
+    }
+  }
+
+  const selectTopic = (name: string) => {
+    const idx = filteredTopics.findIndex((t) => t.name === name)
+    if (idx === -1) return
+    setSelectedTopic(name)
+    scrollToIndex(idx)
+  }
+
   useKeyboard((key) => {
     if (detailOpen) return // TopicDetail owns its own useKeyboard while mounted (mount-scoped, see MessageDetail)
 
@@ -87,28 +107,12 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
       case "r":
         refresh()
         break
-      case "up": {
-        if (filteredTopics.length === 0) break
-        const idx = filteredTopics.findIndex((t) => t.name === selectedTopic)
-        const nextIdx = idx <= 0 ? 0 : idx - 1
-        const next = filteredTopics[nextIdx]
-        if (next) {
-          setSelectedTopic(next.name)
-          scrollToIndex(nextIdx)
-        }
+      case "up":
+        moveSelection(-1)
         break
-      }
-      case "down": {
-        if (filteredTopics.length === 0) break
-        const idx = filteredTopics.findIndex((t) => t.name === selectedTopic)
-        const nextIdx = idx === -1 ? 0 : Math.min(filteredTopics.length - 1, idx + 1)
-        const next = filteredTopics[nextIdx]
-        if (next) {
-          setSelectedTopic(next.name)
-          scrollToIndex(nextIdx)
-        }
+      case "down":
+        moveSelection(1)
         break
-      }
       case "return":
         if (selectedTopic) setDetailOpen(true)
         break
@@ -150,7 +154,11 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
           {`${fitCell("TOPIC", nameWidth)}${fitCell("PARTITIONS", PARTITIONS_W)}REPLICATION`}
         </text>
       </box>
-      <box ref={boxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
+      <box
+        ref={boxRef}
+        onMouseScroll={(e) => moveSelection(wheelSteps(e))}
+        style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}
+      >
         {filteredTopics.length === 0 ? (
           <box style={{ flexGrow: 1, flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
             <text fg={theme.fgDim}>
@@ -165,7 +173,15 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
               fitCell(String(topic.partitionCount), PARTITIONS_W) +
               topic.replicationFactor
             return (
-              <box key={topic.name} style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}>
+              <box
+                key={topic.name}
+                onMouseDown={() =>
+                  rowClickAction(topic.name, selectedTopic) === "open"
+                    ? setDetailOpen(true)
+                    : selectTopic(topic.name)
+                }
+                style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}
+              >
                 <text fg={theme.fg} bg={selected ? theme.bgSelected : undefined} truncate wrapMode="none">
                   {row}
                 </text>

@@ -12,6 +12,7 @@ export type TabId = (typeof TABS)[number]["id"]
 
 interface TabBarProps {
   activeTab: TabId
+  onSelect: (id: TabId) => void
 }
 
 /**
@@ -24,7 +25,7 @@ interface TabBarProps {
  * a function of app state, and gives us the `[1] Consume` numbering the spec
  * mocks up in §5.
  */
-export function TabBar({ activeTab }: TabBarProps) {
+export function TabBar({ activeTab, onSelect }: TabBarProps) {
   return (
     <box
       style={{
@@ -40,6 +41,7 @@ export function TabBar({ activeTab }: TabBarProps) {
         return (
           <box
             key={tab.id}
+            onMouseDown={() => onSelect(tab.id)}
             style={{
               flexDirection: "row",
               flexShrink: 0,

@@ -23,9 +23,10 @@ interface MessageRowProps {
   highlightQuery?: string
   /** True if this row matched an active `@filter:` query — gets a background tint, not a span highlight. */
   filterMatched?: boolean
+  onPress?: () => void
 }
 
-function MessageRow({ slot, selected, highlightQuery, filterMatched }: MessageRowProps) {
+function MessageRow({ slot, selected, highlightQuery, filterMatched, onPress }: MessageRowProps) {
   // Shared with the filter scan (kafka/types.ts) so whichever visits an entry first
   // computes the decode once and both see the same cached result.
   const decoded = getOrDecode(slot.value)
@@ -43,7 +44,7 @@ function MessageRow({ slot, selected, highlightQuery, filterMatched }: MessageRo
       const start = prefix.length + matchIndex
       const end = start + highlightQuery.length
       return (
-        <text truncate wrapMode="none" bg={rowBg} style={{ height: 1, flexShrink: 0 }}>
+        <text onMouseDown={onPress} truncate wrapMode="none" bg={rowBg} style={{ height: 1, flexShrink: 0 }}>
           <span fg={KIND_COLOR[decoded.kind]}>{line.slice(0, start)}</span>
           <span fg={theme.fgInverted} bg={theme.warning}>
             {line.slice(start, end)}
@@ -55,7 +56,14 @@ function MessageRow({ slot, selected, highlightQuery, filterMatched }: MessageRo
   }
 
   return (
-    <text truncate wrapMode="none" fg={KIND_COLOR[decoded.kind]} bg={rowBg} style={{ height: 1, flexShrink: 0 }}>
+    <text
+      onMouseDown={onPress}
+      truncate
+      wrapMode="none"
+      fg={KIND_COLOR[decoded.kind]}
+      bg={rowBg}
+      style={{ height: 1, flexShrink: 0 }}
+    >
       {line}
     </text>
   )
@@ -70,6 +78,8 @@ interface MessageListProps {
   highlightQuery?: string
   /** Set only in `@filter:` mode — every row in `rows` already matched, so this just enables the tint. */
   filterActive?: boolean
+  /** Click handler for a row, keyed by its buffer seq. */
+  onRowPress?: (seq: number) => void
 }
 
 /** Pure presentational: renders exactly `rowCount` rows, no scrolling logic of its own. */
@@ -80,6 +90,7 @@ export function MessageList({
   emptyMessage,
   highlightQuery,
   filterActive,
+  onRowPress,
 }: MessageListProps) {
   if (rows.length === 0) {
     return (
@@ -100,6 +111,7 @@ export function MessageList({
           selected={slot.seq === selectedSeq}
           highlightQuery={highlightQuery}
           filterMatched={filterActive}
+          onPress={onRowPress && (() => onRowPress(slot.seq))}
         />
       ))}
       {Array.from({ length: padding }, (_, i) => (

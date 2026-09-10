@@ -62,6 +62,16 @@ export function App({ profileName, kafka, schemaRegistry, ringBufferSize }: AppP
 
   const handleConsumeStatusChange = useCallback((status: ConsumeStatus) => setConsumeStatus(status), [])
 
+  // Clicking a tab is equivalent to its digit key, and stands down for the same reason the
+  // keyboard shortcuts do while a text input / modal owns the input.
+  const handleTabSelect = useCallback(
+    (id: TabId) => {
+      if (inputActive) return
+      setActiveTab(id)
+    },
+    [inputActive],
+  )
+
   useKeyboard((key) => {
     // While a tab has a text input focused (e.g. Consume's topic field), every
     // other global shortcut stands down — otherwise typing "2" or "queue" would
@@ -117,7 +127,7 @@ export function App({ profileName, kafka, schemaRegistry, ringBufferSize }: AppP
                   connection={activeTab === "consume" ? consumeStatus.connection : "disconnected"}
                   topic={activeTab === "consume" ? (consumeStatus.topic ?? undefined) : undefined}
                 />
-                <TabBar activeTab={activeTab} />
+                <TabBar activeTab={activeTab} onSelect={handleTabSelect} />
 
                 {/*
                   `overflow: hidden` is load-bearing: without it, tab content taller than

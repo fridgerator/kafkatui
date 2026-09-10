@@ -79,6 +79,33 @@ test("n cycles between matches even when they're already visible", async () => {
   expect(h.captureCharFrame()).toMatch(/match 1\/2/) // wrapped around
 })
 
+test("clicking a container row toggles its fold; wheel moves the selection", async () => {
+  const value = { alpha: { one: 1, two: 2 }, beta: { three: 3 } }
+  const h = await testRender(<JsonTreeView value={value} onSearchingChange={() => {}} />, {
+    width: 80,
+    height: 20,
+  })
+  await h.flush()
+  // Small nested objects start expanded.
+  expect(h.captureCharFrame()).toContain("one: 1")
+
+  // Row 0 is the root `{`, row 1 is `alpha: {`. Click it → collapses.
+  await act(async () => {
+    await h.mockMouse.click(4, 1)
+  })
+  await h.flush()
+  const collapsed = h.captureCharFrame()
+  expect(collapsed).toMatch(/alpha:\s*\{…2\}/)
+  expect(collapsed).not.toContain("one: 1")
+
+  // Click again → re-expands.
+  await act(async () => {
+    await h.mockMouse.click(4, 1)
+  })
+  await h.flush()
+  expect(h.captureCharFrame()).toContain("one: 1")
+})
+
 test("expands a collapsed node with the right-arrow key", async () => {
   const value = { items: Array.from({ length: 100 }, (_, i) => `item-${i}`) }
   const h = await testRender(<JsonTreeView value={value} onSearchingChange={() => {}} />, {

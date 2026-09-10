@@ -4,6 +4,7 @@ import type { StartPositionKind } from "../../kafka/ConsumeConfigContext"
 import { parseTimestampInput } from "../../kafka/parseTimestampInput"
 import { useTopicsData } from "../../kafka/TopicsDataContext"
 import { theme } from "../../theme/monokai"
+import { wheelSteps } from "../mouse"
 import { useListViewport } from "../useListViewport"
 
 const START_POSITIONS: StartPositionKind[] = ["earliest", "latest", "timestamp"]
@@ -94,12 +95,15 @@ export function ConsumerConfigModal({
   // intersection. OpenTUI only ever calls it with a string (see TopicBar.tsx for the full note).
   const asSubmitHandler = (fn: (value: string) => void): any => fn
 
-  const commitTopicEdit = (typedValue: string) => {
-    const chosen = highlightedIndex >= 0 ? suggestions[highlightedIndex] : undefined
-    const next = (chosen ?? typedValue).trim()
-    setTopic(next)
+  const chooseTopic = (name: string) => {
+    setTopic(name.trim())
     setEditingTopic(false)
     setValidationError(null)
+  }
+
+  const commitTopicEdit = (typedValue: string) => {
+    const chosen = highlightedIndex >= 0 ? suggestions[highlightedIndex] : undefined
+    chooseTopic(chosen ?? typedValue)
   }
 
   const commitTimestampEdit = (typedValue: string) => {
@@ -119,6 +123,36 @@ export function ConsumerConfigModal({
       return
     }
     onSubmit({ topic: trimmedTopic, startPosition, timestampInput })
+  }
+
+  // The action a field performs when it's "activated" — ⏎ on the focused field, or a mouse
+  // click on the already-focused field.
+  const activateField = (id: FieldId) => {
+    if (id === "topic") {
+      setTopicTyping(topic)
+      const idx = suggestions.findIndex((name) => name === topic)
+      setHighlightedIndex(idx >= 0 ? idx : 0)
+      scrollToIndex(idx >= 0 ? idx : 0)
+      setEditingTopic(true)
+    } else if (id === "startPosition") {
+      const idx = START_POSITIONS.indexOf(startPosition)
+      setStartPosition(START_POSITIONS[(idx + 1) % START_POSITIONS.length]!)
+      setValidationError(null)
+    } else if (id === "timestamp") {
+      setTimestampTyping(timestampInput)
+      setEditingTimestamp(true)
+    } else if (id === "connect") {
+      handleConnect()
+    } else if (id === "cancel") {
+      onCancel()
+    }
+  }
+
+  // First click on a field focuses it; a second click (now focused) activates it.
+  const handleFieldPress = (id: FieldId) => {
+    if (editingTopic || editingTimestamp) return
+    if (focusedField !== id) setFocusedField(id)
+    else activateField(id)
   }
 
   useKeyboard((key) => {
@@ -167,24 +201,7 @@ export function ConsumerConfigModal({
         break
       }
       case "return":
-        if (focusedField === "topic") {
-          setTopicTyping(topic)
-          const idx = suggestions.findIndex((name) => name === topic)
-          setHighlightedIndex(idx >= 0 ? idx : 0)
-          scrollToIndex(idx >= 0 ? idx : 0)
-          setEditingTopic(true)
-        } else if (focusedField === "startPosition") {
-          const idx = START_POSITIONS.indexOf(startPosition)
-          setStartPosition(START_POSITIONS[(idx + 1) % START_POSITIONS.length]!)
-          setValidationError(null)
-        } else if (focusedField === "timestamp") {
-          setTimestampTyping(timestampInput)
-          setEditingTimestamp(true)
-        } else if (focusedField === "connect") {
-          handleConnect()
-        } else if (focusedField === "cancel") {
-          onCancel()
-        }
+        activateField(focusedField)
         break
       case "escape":
         onCancel()
@@ -195,7 +212,7 @@ export function ConsumerConfigModal({
   const visibleSuggestions = suggestions.slice(viewportStart, viewportStart + suggestionRowCount)
 
   const row = (id: FieldId, label: string, content: ReactNode) => (
-    <box style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 1 }}>
+    <box onMouseDown={() => handleFieldPress(id)} style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 1 }}>
       <text flexShrink={0} fg={theme.fgDim}>{`${label}:`}</text>
       {content}
       {focusedField === id && !editingTopic && !editingTimestamp && (
@@ -251,14 +268,29 @@ export function ConsumerConfigModal({
       )}
 
       {editingTopic && (
-        <box ref={suggestionsBoxRef} style={{ flexDirection: "column", flexGrow: 1, maxHeight: 10, overflow: "hidden", paddingLeft: 8 }}>
+        <box
+          ref={suggestionsBoxRef}
+          onMouseScroll={(e) => {
+            const next = Math.max(0, Math.min(suggestions.length - 1, highlightedIndex + wheelSteps(e)))
+            setHighlightedIndex(next)
+            scrollToIndex(next)
+          }}
+          style={{ flexDirection: "column", flexGrow: 1, maxHeight: 10, overflow: "hidden", paddingLeft: 8 }}
+        >
           {suggestions.length === 0 ? (
             <text fg={theme.fgDim}>(no matching topics — ⏎ to use the typed text as-is)</text>
           ) : (
             visibleSuggestions.map((name, i) => {
               const idx = viewportStart + i
               return (
-                <text key={name} truncate wrapMode="none" bg={idx === highlightedIndex ? theme.bgSelected : undefined} fg={theme.fg}>
+                <text
+                  key={name}
+                  truncate
+                  wrapMode="none"
+                  bg={idx === highlightedIndex ? theme.bgSelected : undefined}
+                  fg={theme.fg}
+                  onMouseDown={() => chooseTopic(name)}
+                >
                   {name}
                 </text>
               )
@@ -272,13 +304,26 @@ export function ConsumerConfigModal({
           {row(
             "startPosition",
             "Start",
-            <text flexGrow={1} fg={theme.fg}>
+            <>
               {START_POSITIONS.map((pos) => (
-                <span key={pos} fg={pos === startPosition ? theme.fgInverted : theme.fgDim} bg={pos === startPosition ? theme.accent : undefined}>
+                <text
+                  key={pos}
+                  flexShrink={0}
+                  fg={pos === startPosition ? theme.fgInverted : theme.fgDim}
+                  bg={pos === startPosition ? theme.accent : undefined}
+                  // Stop the click from also hitting the row's cycle handler — clicking an
+                  // option picks it directly.
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    setFocusedField("startPosition")
+                    setStartPosition(pos)
+                    setValidationError(null)
+                  }}
+                >
                   {`  ${pos === startPosition ? "●" : "○"} ${START_POSITION_LABELS[pos]}  `}
-                </span>
+                </text>
               ))}
-            </text>,
+            </>,
           )}
 
           {startPosition === "timestamp" &&
@@ -306,10 +351,18 @@ export function ConsumerConfigModal({
 
           <text fg={theme.fgDim}> </text>
           <box style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 3 }}>
-            <text fg={theme.fg} bg={focusedField === "connect" ? theme.bgSelected : undefined}>
+            <text
+              fg={theme.fg}
+              bg={focusedField === "connect" ? theme.bgSelected : undefined}
+              onMouseDown={() => handleFieldPress("connect")}
+            >
               {"[ Connect ]"}
             </text>
-            <text fg={theme.fg} bg={focusedField === "cancel" ? theme.bgSelected : undefined}>
+            <text
+              fg={theme.fg}
+              bg={focusedField === "cancel" ? theme.bgSelected : undefined}
+              onMouseDown={() => handleFieldPress("cancel")}
+            >
               {"[ Cancel ]"}
             </text>
           </box>

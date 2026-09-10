@@ -10,6 +10,7 @@ import {
   type JsonRow,
 } from "../../kafka/decode/jsonTree"
 import { theme } from "../../theme/monokai"
+import { wheelSteps } from "../mouse"
 import { useListViewport } from "../useListViewport"
 
 interface JsonTreeViewProps {
@@ -233,16 +234,29 @@ export function JsonTreeView({ value, onSearchingChange }: JsonTreeViewProps) {
         </box>
       )}
 
-      <box ref={boxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
-        {windowRows.map((row, i) => (
+      <box
+        ref={boxRef}
+        onMouseScroll={(e) =>
+          setSelectedIndex((i) => Math.max(0, Math.min(visibleRows.length - 1, i + wheelSteps(e))))
+        }
+        style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}
+      >
+        {windowRows.map((row, i) => {
+          const idx = viewportStart + i
+          return (
           <JsonTreeRow
             key={row.path}
             row={row}
-            selected={viewportStart + i === selectedIndex}
+            selected={idx === selectedIndex}
             matched={matchedPaths.has(row.path)}
             query={committedQuery}
+            onPress={() => {
+              setSelectedIndex(idx)
+              if (row.hasChildren) toggleCollapse(row)
+            }}
           />
-        ))}
+          )
+        })}
       </box>
 
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, gap: 2, paddingLeft: 1, overflow: "hidden" }}>
@@ -262,9 +276,10 @@ interface JsonTreeRowProps {
   selected: boolean
   matched: boolean
   query: string
+  onPress?: () => void
 }
 
-function JsonTreeRow({ row, selected, matched, query }: JsonTreeRowProps) {
+function JsonTreeRow({ row, selected, matched, query, onPress }: JsonTreeRowProps) {
   const bg = selected ? theme.bgSelected : matched ? theme.bgPanel : undefined
   const line = rowText(row)
 
@@ -277,7 +292,7 @@ function JsonTreeRow({ row, selected, matched, query }: JsonTreeRowProps) {
     if (at >= 0) {
       const end = at + query.trim().length
       return (
-        <text truncate wrapMode="none" bg={bg} style={{ height: 1, flexShrink: 0 }}>
+        <text onMouseDown={onPress} truncate wrapMode="none" bg={bg} style={{ height: 1, flexShrink: 0 }}>
           <span fg={theme.fg}>{line.slice(0, at)}</span>
           <span fg={theme.fgInverted} bg={theme.warning}>
             {line.slice(at, end)}
@@ -292,7 +307,7 @@ function JsonTreeRow({ row, selected, matched, query }: JsonTreeRowProps) {
   const caretColor = row.hasChildren ? theme.fgDim : theme.fg
 
   return (
-    <text truncate wrapMode="none" bg={bg} style={{ height: 1, flexShrink: 0 }}>
+    <text onMouseDown={onPress} truncate wrapMode="none" bg={bg} style={{ height: 1, flexShrink: 0 }}>
       <span fg={caretColor}>{indent}</span>
       {row.keyLabel !== null && (
         <span fg={row.isArrayIndex ? theme.fgDim : theme.synKey}>{keyLabelText(row)}</span>

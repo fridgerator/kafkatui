@@ -13,6 +13,7 @@ import { useKafkaClient } from "../../kafka/KafkaClientContext"
 import { parseTimestampInput } from "../../kafka/parseTimestampInput"
 import { useSchemaRegistry } from "../../kafka/SchemaRegistryContext"
 import { getOrDecode, getSearchableText, type BufferedMessage, type ConnectionState, type RawMessage } from "../../kafka/types"
+import { rowClickAction, wheelSteps } from "../mouse"
 import { SearchBox } from "../SearchBox"
 import { theme } from "../../theme/monokai"
 import { ConsumerConfigModal, type ConsumerConfigModalSubmitValue } from "./ConsumerConfigModal"
@@ -358,6 +359,87 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
     setSelectedSeq(buffer.newestSeq)
   }, [])
 
+  // Move the selection one row toward the oldest message. Shared by the ↑ key and the wheel.
+  const stepUp = () => {
+    const buffer = ringBufferRef.current
+    const matches = matchesRef.current
+    // Only freeze on the *transition* into paused — repeated "up" while already paused must
+    // not keep re-arming the cap to a later seq, or it'd defeat the freeze.
+    const freezeIfNeeded = () => {
+      if (following) pausedAtSeqRef.current = buffer.newestSeq
+    }
+    if (matches) {
+      if (matches.length === 0) return
+      freezeIfNeeded()
+      setFollowing(false)
+      setSelectedSeq((s) => {
+        const idx = s === null ? matches.length - 1 : matches.findIndex((m) => m.seq === s)
+        const prevSlot = matches[idx <= 0 ? 0 : idx - 1]
+        if (!prevSlot) return s
+        setViewportStartSeq((v) => Math.min(v, prevSlot.seq))
+        return prevSlot.seq
+      })
+    } else {
+      if (buffer.size === 0) return
+      freezeIfNeeded()
+      setFollowing(false)
+      setSelectedSeq((s) => {
+        const next = s === null ? buffer.newestSeq : Math.max(buffer.oldestSeq, s - 1)
+        setViewportStartSeq((v) => Math.min(v, next))
+        return next
+      })
+    }
+  }
+
+  // Move the selection one row toward the newest message; re-arms follow mode once it reaches
+  // the tail. Shared by the ↓ key and the wheel.
+  const stepDown = () => {
+    const buffer = ringBufferRef.current
+    const matches = matchesRef.current
+    if (matches) {
+      if (matches.length === 0) return
+      setSelectedSeq((s) => {
+        const idx = s === null ? -1 : matches.findIndex((m) => m.seq === s)
+        const nextIdx = idx === -1 ? 0 : Math.min(matches.length - 1, idx + 1)
+        const nextSlot = matches[nextIdx]
+        if (!nextSlot) return s
+        if (nextIdx >= matches.length - 1) {
+          pausedAtSeqRef.current = null
+          setFollowing(true)
+        }
+        setViewportStartSeq((v) => Math.max(v, nextSlot.seq - rowCountRef.current + 1))
+        return nextSlot.seq
+      })
+    } else {
+      if (buffer.size === 0) return
+      setSelectedSeq((s) => {
+        const next = s === null ? buffer.newestSeq : Math.min(buffer.newestSeq, s + 1)
+        if (next >= buffer.newestSeq) {
+          pausedAtSeqRef.current = null
+          setFollowing(true)
+        }
+        setViewportStartSeq((v) => Math.max(v, next - rowCountRef.current + 1))
+        return next
+      })
+    }
+  }
+
+  // Clicking a visible row selects it (freezing follow mode, like ↑ does, so the tail doesn't
+  // scroll the selection away); clicking the already-selected row opens its detail pane.
+  const selectSeq = (seq: number) => {
+    if (following) pausedAtSeqRef.current = ringBufferRef.current.newestSeq
+    setFollowing(false)
+    setSelectedSeq(seq)
+  }
+
+  const openDetailForSeq = (seq: number) => {
+    const matches = matchesRef.current
+    const slot = matches ? matches.find((m) => m.seq === seq) : ringBufferRef.current.getBySeq(seq)
+    if (!slot) return
+    setDetailSlot(slot)
+    setMode("detail")
+  }
+
   useKeyboard((key) => {
     if (mode === "configuring") {
       // ConsumerConfigModal owns its own useKeyboard while mounted (mount-scoped, same pattern
@@ -392,21 +474,11 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         setSearchDraft(searchQuery)
         setMode("editingSearch")
         break
-      case "return": {
-        if (selectedSeq === null) break
-        // Holds the slot object directly rather than re-looking it up by seq later —
-        // if the ring buffer evicts this seq while the pane is open, the object itself
-        // isn't destroyed (JS keeps it alive via this reference), so the detail view is
-        // naturally immune to eviction (decision 2).
-        const matches = matchesRef.current
-        const slot = matches
-          ? matches.find((m) => m.seq === selectedSeq)
-          : ringBufferRef.current.getBySeq(selectedSeq)
-        if (!slot) break
-        setDetailSlot(slot)
-        setMode("detail")
+      case "return":
+        // The slot object is held directly (see `openDetailForSeq` / decision 2) so an
+        // eviction of this seq while the pane is open can't destroy it.
+        if (selectedSeq !== null) openDetailForSeq(selectedSeq)
         break
-      }
       case "space":
         setFollowing((was) => {
           const now = !was
@@ -450,68 +522,12 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
         }
         break
       }
-      case "up": {
-        const buffer = ringBufferRef.current
-        const matches = matchesRef.current
-        // Only freeze on the *transition* into paused — repeated "up" presses while already
-        // paused must not keep re-arming the cap to a later seq, or it'd defeat the freeze.
-        const freezeIfNeeded = () => {
-          if (following) pausedAtSeqRef.current = buffer.newestSeq
-        }
-        if (matches) {
-          if (matches.length === 0) break
-          freezeIfNeeded()
-          setFollowing(false)
-          setSelectedSeq((s) => {
-            const idx = s === null ? matches.length - 1 : matches.findIndex((m) => m.seq === s)
-            const prevSlot = matches[idx <= 0 ? 0 : idx - 1]
-            if (!prevSlot) return s
-            setViewportStartSeq((v) => Math.min(v, prevSlot.seq))
-            return prevSlot.seq
-          })
-        } else {
-          if (buffer.size === 0) break
-          freezeIfNeeded()
-          setFollowing(false)
-          setSelectedSeq((s) => {
-            const next = s === null ? buffer.newestSeq : Math.max(buffer.oldestSeq, s - 1)
-            setViewportStartSeq((v) => Math.min(v, next))
-            return next
-          })
-        }
+      case "up":
+        stepUp()
         break
-      }
-      case "down": {
-        const buffer = ringBufferRef.current
-        const matches = matchesRef.current
-        if (matches) {
-          if (matches.length === 0) break
-          setSelectedSeq((s) => {
-            const idx = s === null ? -1 : matches.findIndex((m) => m.seq === s)
-            const nextIdx = idx === -1 ? 0 : Math.min(matches.length - 1, idx + 1)
-            const nextSlot = matches[nextIdx]
-            if (!nextSlot) return s
-            if (nextIdx >= matches.length - 1) {
-              pausedAtSeqRef.current = null
-              setFollowing(true)
-            }
-            setViewportStartSeq((v) => Math.max(v, nextSlot.seq - rowCountRef.current + 1))
-            return nextSlot.seq
-          })
-        } else {
-          if (buffer.size === 0) break
-          setSelectedSeq((s) => {
-            const next = s === null ? buffer.newestSeq : Math.min(buffer.newestSeq, s + 1)
-            if (next >= buffer.newestSeq) {
-              pausedAtSeqRef.current = null
-              setFollowing(true)
-            }
-            setViewportStartSeq((v) => Math.max(v, next - rowCountRef.current + 1))
-            return next
-          })
-        }
+      case "down":
+        stepDown()
         break
-      }
     }
   })
 
@@ -596,7 +612,15 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           </text>
         )}
       </box>
-      <box ref={listBoxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
+      <box
+        ref={listBoxRef}
+        onMouseScroll={(e) => {
+          const steps = wheelSteps(e)
+          const step = steps < 0 ? stepUp : stepDown
+          for (let i = 0; i < Math.abs(steps); i++) step()
+        }}
+        style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}
+      >
         <MessageList
           rows={visibleRows}
           rowCount={rowCount}
@@ -604,6 +628,9 @@ export function ConsumeTab({ ringBufferSize, onStatusChange, onInputActiveChange
           emptyMessage={emptyMessage}
           highlightQuery={matches !== null && !isFilterMode ? activeQueryText.trim() : undefined}
           filterActive={matches !== null && isFilterMode}
+          onRowPress={(seq) =>
+            rowClickAction(seq, selectedSeq) === "open" ? openDetailForSeq(seq) : selectSeq(seq)
+          }
         />
       </box>
       {mode === "configuring" && (
