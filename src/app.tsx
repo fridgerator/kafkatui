@@ -6,7 +6,6 @@ import { StatusBar } from "./components/StatusBar"
 import { TABS, TabBar, type TabId } from "./components/TabBar"
 import { ConsumeTab, type ConsumeStatus } from "./components/consume/ConsumeTab"
 import { GroupsTab } from "./components/groups/GroupsTab"
-import { ProduceTab } from "./components/produce/ProduceTab"
 import { TopicsTab } from "./components/topics/TopicsTab"
 import { ConsumeConfigProvider } from "./kafka/ConsumeConfigContext"
 import { GroupsDataProvider } from "./kafka/GroupsDataContext"
@@ -45,8 +44,6 @@ function TabContent({
       return <GroupsTab onInputActiveChange={onInputActiveChange} />
     case "topics":
       return <TopicsTab onInputActiveChange={onInputActiveChange} />
-    case "produce":
-      return <ProduceTab onInputActiveChange={onInputActiveChange} />
   }
 }
 
@@ -73,7 +70,7 @@ export function App({ profileName, kafka, schemaRegistry, ringBufferSize }: AppP
     // gate is the app's responsibility, not something OpenTUI does for us.
     if (inputActive) return
 
-    // Digit keys 1-4 jump straight to a tab. `sequence` is checked alongside
+    // Digit keys 1-N jump straight to a tab. `sequence` is checked alongside
     // `name` because digit key naming differs between the raw and kitty
     // keyboard parsers.
     const digit = Number.parseInt(key.name || key.sequence, 10)

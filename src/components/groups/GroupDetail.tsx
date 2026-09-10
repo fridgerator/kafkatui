@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react"
 import type { GroupSnapshot } from "../../kafka/groups"
 import { Sparkline } from "../Sparkline"
+import { fitCell, fitCellRight } from "../tableCell"
 import { theme } from "../../theme/monokai"
 
 interface GroupDetailProps {
@@ -39,7 +40,7 @@ export function GroupDetail({ snapshot, aggregateHistory, getPartitionHistory, o
           ) : (
             snapshot.members.map((member) => (
               <text key={member.memberId} fg={theme.fg} truncate wrapMode="none">
-                {`  ${member.clientId.padEnd(20)} ${member.host.padEnd(16)} ${member.assignment
+                {`  ${fitCell(member.clientId, 20)} ${fitCell(member.host, 16)} ${member.assignment
                   .map((a) => `${a.topic}[${a.partitions.join(",")}]`)
                   .join(" ")}`}
               </text>
@@ -48,7 +49,7 @@ export function GroupDetail({ snapshot, aggregateHistory, getPartitionHistory, o
 
           <text fg={theme.fgDim}> </text>
           <text fg={theme.fgDim} truncate wrapMode="none">
-            {`${"TOPIC".padEnd(22)}${"PART".padEnd(6)}${"CURRENT".padStart(10)}  ${"LOG-END".padStart(10)}  ${"LAG".padStart(8)}  TREND`}
+            {`${fitCell("TOPIC", 22)}${fitCell("PART", 6)}${fitCellRight("CURRENT", 10)}  ${fitCellRight("LOG-END", 10)}  ${fitCellRight("LAG", 8)}  TREND`}
           </text>
           {snapshot.partitionLags.length === 0 ? (
             <text fg={theme.fgDim}>(no committed partitions)</text>
@@ -56,11 +57,14 @@ export function GroupDetail({ snapshot, aggregateHistory, getPartitionHistory, o
             snapshot.partitionLags.map((p) => {
               const history = getPartitionHistory(p.topic, p.partition)
               const row =
-                `${p.topic.length > 21 ? `${p.topic.slice(0, 20)}…` : p.topic.padEnd(22)}` +
-                `${String(p.partition).padEnd(6)}` +
-                `${(p.currentOffset === null ? "—" : p.currentOffset.toLocaleString()).padStart(10)}  ` +
-                `${p.logEndOffset.toLocaleString().padStart(10)}  ` +
-                `${(p.lag === null ? "—" : p.lag.toLocaleString()).padStart(8)}  `
+                fitCell(p.topic, 22) +
+                fitCell(String(p.partition), 6) +
+                fitCellRight(p.currentOffset === null ? "—" : p.currentOffset.toLocaleString(), 10) +
+                "  " +
+                fitCellRight(p.logEndOffset.toLocaleString(), 10) +
+                "  " +
+                fitCellRight(p.lag === null ? "—" : p.lag.toLocaleString(), 8) +
+                "  "
               return (
                 <box key={`${p.topic}:${p.partition}`} style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
                   <text fg={theme.fg} truncate wrapMode="none">

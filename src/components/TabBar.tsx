@@ -1,10 +1,11 @@
 import { theme } from "../theme/monokai"
 
+// The Produce tab is intentionally omitted for now — its code lives under
+// components/produce/ but is not wired up until the feature is built out.
 export const TABS = [
   { id: "consume", label: "Consume" },
   { id: "groups", label: "Groups" },
   { id: "topics", label: "Topics" },
-  { id: "produce", label: "Produce" },
 ] as const
 
 export type TabId = (typeof TABS)[number]["id"]

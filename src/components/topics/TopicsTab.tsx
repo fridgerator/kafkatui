@@ -1,10 +1,15 @@
-import { useKeyboard } from "@opentui/react"
+import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useMemo, useState } from "react"
 import { useListViewport } from "../useListViewport"
 import { useTopicsData } from "../../kafka/TopicsDataContext"
 import { theme } from "../../theme/monokai"
 import { SearchBox } from "../SearchBox"
+import { fitCell } from "../tableCell"
 import { TopicDetail } from "./TopicDetail"
+
+const PARTITIONS_W = 12
+const REPLICATION_RESERVE = 14 // columns left for the "REPLICATION" header / value
+const TOPICS_FIXED_W = 1 /* box paddingLeft */ + PARTITIONS_W + REPLICATION_RESERVE
 
 interface TopicsTabProps {
   onInputActiveChange: (active: boolean) => void
@@ -32,6 +37,9 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
   const [editingSearch, setEditingSearch] = useState(false)
   const [searchDraft, setSearchDraft] = useState("")
   const [detailOpen, setDetailOpen] = useState(false)
+
+  const { width: termWidth } = useTerminalDimensions()
+  const nameWidth = Math.max(24, Math.min(60, termWidth - TOPICS_FIXED_W))
 
   useEffect(() => {
     ensureFetched()
@@ -139,7 +147,7 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
       />
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}>
         <text fg={theme.fgDim} truncate wrapMode="none">
-          {`${"TOPIC".padEnd(32)}${"PARTITIONS".padEnd(12)}REPLICATION`}
+          {`${fitCell("TOPIC", nameWidth)}${fitCell("PARTITIONS", PARTITIONS_W)}REPLICATION`}
         </text>
       </box>
       <box ref={boxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
@@ -153,8 +161,9 @@ export function TopicsTab({ onInputActiveChange }: TopicsTabProps) {
           visible.map((topic) => {
             const selected = topic.name === selectedTopic
             const row =
-              `${topic.name.length > 31 ? `${topic.name.slice(0, 30)}…` : topic.name.padEnd(32)}` +
-              `${String(topic.partitionCount).padEnd(12)}${topic.replicationFactor}`
+              fitCell(topic.name, nameWidth) +
+              fitCell(String(topic.partitionCount), PARTITIONS_W) +
+              topic.replicationFactor
             return (
               <box key={topic.name} style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}>
                 <text fg={theme.fg} bg={selected ? theme.bgSelected : undefined} truncate wrapMode="none">

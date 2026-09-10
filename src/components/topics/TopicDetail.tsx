@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react"
 import { fetchTopicDetail, type TopicDetail as TopicDetailData } from "../../kafka/topics"
 import { useKafkaClient } from "../../kafka/KafkaClientContext"
 import { Sparkline } from "../Sparkline"
+import { fitCell, fitCellRight } from "../tableCell"
 import { theme } from "../../theme/monokai"
 
 const POLL_INTERVAL_MS = 5000
@@ -98,18 +99,21 @@ export function TopicDetail({ topic, onClose }: TopicDetailProps) {
         <scrollbox focused style={{ flexGrow: 1 }}>
           <box style={{ flexDirection: "column", paddingLeft: 1 }}>
             <text fg={theme.fgDim} truncate wrapMode="none">
-              {`${"PART".padEnd(6)}${"LEADER".padEnd(8)}${"ISR".padEnd(10)}${"REPLICAS".padEnd(10)}${"EARLIEST".padStart(10)}  ${"LATEST".padStart(10)}  ${"COUNT".padStart(10)}  THROUGHPUT`}
+              {`${fitCell("PART", 6)}${fitCell("LEADER", 8)}${fitCell("ISR", 10)}${fitCell("REPLICAS", 10)}${fitCellRight("EARLIEST", 10)}  ${fitCellRight("LATEST", 10)}  ${fitCellRight("COUNT", 10)}  THROUGHPUT`}
             </text>
             {detail.partitions.map((p) => {
               const history = throughputHistoryRef.current.get(p.partitionId) ?? []
               const row =
-                `${String(p.partitionId).padEnd(6)}` +
-                `${String(p.leader).padEnd(8)}` +
-                `${`[${p.isr.join(",")}]`.padEnd(10)}` +
-                `${`[${p.replicas.join(",")}]`.padEnd(10)}` +
-                `${p.earliestOffset.toLocaleString().padStart(10)}  ` +
-                `${p.latestOffset.toLocaleString().padStart(10)}  ` +
-                `${p.messageCount.toLocaleString().padStart(10)}  `
+                fitCell(String(p.partitionId), 6) +
+                fitCell(String(p.leader), 8) +
+                fitCell(`[${p.isr.join(",")}]`, 10) +
+                fitCell(`[${p.replicas.join(",")}]`, 10) +
+                fitCellRight(p.earliestOffset.toLocaleString(), 10) +
+                "  " +
+                fitCellRight(p.latestOffset.toLocaleString(), 10) +
+                "  " +
+                fitCellRight(p.messageCount.toLocaleString(), 10) +
+                "  "
               return (
                 <box key={p.partitionId} style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
                   <text fg={p.underReplicated ? theme.warning : theme.fg} truncate wrapMode="none">

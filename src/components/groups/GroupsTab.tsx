@@ -1,11 +1,19 @@
-import { useKeyboard } from "@opentui/react"
+import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useMemo, useState } from "react"
 import { useGroupsData } from "../../kafka/GroupsDataContext"
 import { Sparkline } from "../Sparkline"
 import { theme } from "../../theme/monokai"
 import { SearchBox } from "../SearchBox"
+import { fitCell, fitCellRight } from "../tableCell"
 import { useListViewport } from "../useListViewport"
 import { GroupDetail } from "./GroupDetail"
+
+// Fixed column widths for the list "table". GROUP ID is sized responsively (see nameWidth).
+const STATE_W = 21 // fits "CompletingRebalance" (19)
+const MEMBERS_W = 9
+const LAG_W = 11
+const TREND_RESERVE = 22 // columns left for the sparkline + "  ⚠ stuck"
+const FIXED_W = 1 /* box paddingLeft */ + STATE_W + MEMBERS_W + LAG_W + 2 /* trailing gap */
 
 /** Spec §8.3: "flag groups where lag is nonzero but not decreasing." Only the trailing
  * few samples are checked (not the full sparkline history) so a genuinely stuck group is
@@ -51,6 +59,9 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
   const [editingSearch, setEditingSearch] = useState(false)
   const [searchDraft, setSearchDraft] = useState("")
   const [detailOpen, setDetailOpen] = useState(false)
+
+  const { width: termWidth } = useTerminalDimensions()
+  const nameWidth = Math.max(24, Math.min(60, termWidth - FIXED_W - TREND_RESERVE))
 
   useEffect(() => {
     ensurePolling()
@@ -180,7 +191,7 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
       />
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }}>
         <text fg={theme.fgDim} truncate wrapMode="none">
-          {`${"GROUP ID".padEnd(28)}${"STATE".padEnd(12)}${"MEMBERS".padEnd(9)}${"LAG".padStart(8)}  TREND`}
+          {`${fitCell("GROUP ID", nameWidth)}${fitCell("STATE", STATE_W)}${fitCell("MEMBERS", MEMBERS_W)}${fitCellRight("LAG", LAG_W)}  TREND`}
         </text>
       </box>
       <box ref={boxRef} style={{ flexGrow: 1, flexDirection: "column", overflow: "hidden" }}>
@@ -200,8 +211,11 @@ export function GroupsTab({ onInputActiveChange }: GroupsTabProps) {
             const stuck = isGroupStuck(history)
             const selected = group.groupId === selectedGroupId
             const row =
-              `${group.groupId.length > 27 ? `${group.groupId.slice(0, 26)}…` : group.groupId.padEnd(28)}` +
-              `${group.state.padEnd(12)}${String(group.members.length).padEnd(9)}${group.totalLag.toLocaleString().padStart(8)}  `
+              fitCell(group.groupId, nameWidth) +
+              fitCell(group.state, STATE_W) +
+              fitCell(String(group.members.length), MEMBERS_W) +
+              fitCellRight(group.totalLag.toLocaleString(), LAG_W) +
+              "  "
             return (
               <box
                 key={group.groupId}

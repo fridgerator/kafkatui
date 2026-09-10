@@ -8,7 +8,7 @@ export interface Hint {
 
 /** Hints shown on every tab, appended after the tab-specific ones. */
 const GLOBAL_HINTS: Hint[] = [
-  { key: "1-4/⇥", label: "tab" },
+  { key: "1-3/⇥", label: "tab" },
   { key: "q", label: "quit" },
 ]
 
@@ -43,12 +43,6 @@ const TAB_HINTS: Record<TabId, Hint[]> = {
     { key: "⏎", label: "partitions & config" },
     { key: "/", label: "search" },
     { key: "r", label: "refresh" },
-  ],
-  produce: [
-    { key: "↑↓", label: "field" },
-    { key: "⏎", label: "edit / cycle" },
-    { key: "esc", label: "cancel edit" },
-    { key: "—", label: "send disabled (v1)" },
   ],
 }
 
